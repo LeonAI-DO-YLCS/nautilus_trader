@@ -147,6 +147,12 @@ and take precedence over the generic contributor guidance above where they diffe
 - Deriv API docs index: `https://developers.deriv.com/llms.txt`. Do not install the Deriv MCP
   server until the owner asks.
 
+### Subagent failures
+
+- When a subagent fails the same job the same way twice, the coordinating agent stops delegating
+  that job and does it itself. Get the failing agent's report first, then follow every other rule
+  here (branch or worktree, tests, no merge into `develop` without the owner).
+
 ### Safety
 
 - Never place real-money trades, log in to broker accounts, or read credential files unless the
