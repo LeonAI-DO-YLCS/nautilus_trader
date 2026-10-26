@@ -99,3 +99,57 @@ contributor can push one coherent update.
 - Do not add an AI tool or model as an author, co-author, or contributor.
 - Do not add `Co-authored-by:` trailers for AI tools or models.
 - Do not add branded footers such as `Generated with ...` to commit messages or pull request text.
+
+## LeonAI-DO fork rules
+
+These rules come from the fork owner (2026-10-26). They apply to every agent working in this fork
+and take precedence over the generic contributor guidance above where they differ.
+
+### Repository, place and sync
+
+- `origin` is the owner's fork, `https://github.com/LeonAI-DO-YLCS/nautilus_trader`. Never pull
+  from, push to, or open issues or pull requests on the upstream `nautechsystems` repository.
+- Develop, build and run in WSL2 Ubuntu, in the clone `/home/leonai-do/dev/nautilus_trader`, with
+  the default `python/.venv`. MetaTrader 5 runs on Windows; reach it only through a loopback
+  service on `127.0.0.1` (WSL mirrored networking). The Windows copy at
+  `C:\LeonAI-DO\dev\TRADING\nautilus_trader` and the Linux copy sync only through GitHub push and
+  pull.
+- Put every change on a new branch (small change) or in a git worktree under `.worktrees/`
+  (several agents in different scopes). Never commit directly on `develop` or `main`; merging into
+  `develop` needs the owner's approval.
+- Push each commit to `origin` right away (standing owner authorization for work branches on the
+  fork). The commit-message and attribution rules above still apply.
+
+### Priorities
+
+- Efficiency, speed, robustness and accuracy come first. Use the native, fastest exact data paths
+  (Parquet catalog, Arrow wranglers, streaming backtests).
+- Run a prior-art check before building anything; do not rebuild what already exists in this
+  repository or in the owner's other projects. Test, validate and verify every step.
+
+### Engines
+
+- Standalone backtests, strategy optimization, genetic parameter search and strategy mining use
+  the free open-source `vectorbt`, never NautilusTrader. It must support binary options and keep
+  traditional trading. The vectorbt work lives in its own folder in this repository with its own
+  Python environment.
+- Only strategies proven in vectorbt move to NautilusTrader, for event-driven confirmation and
+  then paper or live trading. Define settlement, payout and stake rules once and share them.
+
+### Deriv binary options profile (first release)
+
+- Market: Volatility 75 (`R_75`), strict Rise/Fall, 1-minute duration. `CALL` = Rise, `PUT` = Fall;
+  a tie loses. Fixed 95.2% net payout per run.
+- Money: every run starts at 10,000 USD. Stake = 0.05% of the available balance (stakes locked in
+  open contracts excluded), rounded down to cents, raised to 0.35 USD when below. Up to 5
+  contracts open at once.
+- Label results from MT5 data "MT5 simulation" until MT5 and Deriv price feeds are proven equal.
+- Deriv API docs index: `https://developers.deriv.com/llms.txt`. Do not install the Deriv MCP
+  server until the owner asks.
+
+### Safety
+
+- Never place real-money trades, log in to broker accounts, or read credential files unless the
+  owner explicitly asks. Keep secrets out of files, logs and output.
+- Test data: `C:\LeonAI-DO\dev\TRADING\Datasets\Volatility75Index_yearly_deduped`. Never write to
+  the `Datasets` folder.
