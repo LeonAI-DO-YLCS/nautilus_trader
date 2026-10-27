@@ -75,9 +75,11 @@ def load(start_ns, end_ns, scenario):
     )
 
 
-def signals(fast, middle, slow):
+def signals(fast, middle, slow, trend=False):
     """
     Return (start_ns, is_call) for every bar where the close crosses all three EMAs.
+
+    With `trend`, a Rise also needs the slow EMA rising on that bar, and a Fall falling.
     """
     cols = [DATA["ema_column"][w] for w in (fast, middle, slow)]
     ema = DATA["emas"][:, cols]
@@ -88,18 +90,22 @@ def signals(fast, middle, slow):
     was_ready = np.concatenate(([False], ready[:-1]))
     rise = was_ready & above & ~np.concatenate(([False], above[:-1]))
     fall = was_ready & below & ~np.concatenate(([False], below[:-1]))
+    if trend:
+        slope = np.diff(ema[:, 2], prepend=np.nan)
+        rise &= slope > 0
+        fall &= slope < 0
     fire = rise | fall
     return DATA["bar_close_ns"][fire], rise[fire]
 
 
-def simulate(fast, middle, slow, expiry_min, from_ns, to_ns):
+def simulate(fast, middle, slow, expiry_min, from_ns, to_ns, trend=False):
     """
     Backtest one setting on signals starting in [from_ns, to_ns) with the exact cash rules.
 
     Returns the equity curve (times and account values in cents) and the counts.
     """
     ts, price = DATA["ts"], DATA["price"]
-    start, is_call = signals(fast, middle, slow)
+    start, is_call = signals(fast, middle, slow, trend)
     keep = (start >= from_ns) & (start < to_ns)
     start, is_call = start[keep], is_call[keep]
     expiry = start + expiry_min * MINUTE_NS
@@ -107,18 +113,21 @@ def simulate(fast, middle, slow, expiry_min, from_ns, to_ns):
     exit_ = np.searchsorted(ts, expiry, side="right") - 1
     available, open_, skipped, unresolved = START_CASH, [], 0, 0
     times, values = [from_ns], [START_CASH]
-    trades = wins = 0
+    trades = wins = profit = loss = 0
+    in_market = []  # (entry time, expiry) of every contract taken
 
     def settle(until_ns):
         """Pay every due contract in admission order; value = free cash + locked stakes."""
-        nonlocal available, trades, wins
+        nonlocal available, trades, wins, profit, loss
         for contract in list(open_):
-            due, _, credit, fresh = contract
+            due, stake, credit, fresh = contract
             if fresh and due <= until_ns:
                 open_.remove(contract)
                 available += credit
                 trades += 1
                 wins += credit > 0
+                profit += max(0, credit - stake)
+                loss += stake if credit == 0 else 0
                 times.append(due)
                 values.append(available + sum(c[1] for c in open_))
 
@@ -135,6 +144,7 @@ def simulate(fast, middle, slow, expiry_min, from_ns, to_ns):
             skipped += 1
             continue
         available -= stake
+        in_market.append((int(ts[entry[i]]), int(expiry[i])))
         fresh = exit_[i] >= entry[i] and expiry[i] - ts[exit_[i]] <= FRESH_NS
         direction = "CALL" if is_call[i] else "PUT"
         won = fresh and is_win(direction, int(price[entry[i]]), int(price[exit_[i]]))
@@ -156,6 +166,9 @@ def simulate(fast, middle, slow, expiry_min, from_ns, to_ns):
         "wins": wins,
         "skipped": skipped,
         "unresolved": unresolved,
+        "profit_cents": profit,
+        "loss_cents": loss,
+        "in_market": in_market,
     }
 
 
@@ -277,7 +290,7 @@ def main():
     )
     if args.check:
         r = simulate(9, 21, 200, 1, start_ns, end_ns)
-        print({k: v for k, v in r.items() if k not in ("times", "values")})
+        print({k: v for k, v in r.items() if k not in ("times", "values", "in_market")})
         return
     split_ns = start_ns + (end_ns - start_ns) * 7 // 10
     folder = Path(args.output)
@@ -351,14 +364,22 @@ def main():
             "slow": best[2],
             "expiry_min": best[3],
         },
-        "search": {k: v for k, v in seen[best].items() if k not in ("times", "values")},
+        "search": {
+            k: v
+            for k, v in seen[best].items()
+            if k not in ("times", "values", "in_market")
+        },
         "held_back_test": {
-            k: v for k, v in test.items() if k not in ("times", "values")
+            k: v for k, v in test.items() if k not in ("times", "values", "in_market")
         },
         "top10": [
             {
                 "setting": list(g),
-                **{k: v for k, v in seen[g].items() if k not in ("times", "values")},
+                **{
+                    k: v
+                    for k, v in seen[g].items()
+                    if k not in ("times", "values", "in_market")
+                },
             }
             for g in sorted(seen, key=lambda g: fitness(seen[g]), reverse=True)[:10]
         ],
