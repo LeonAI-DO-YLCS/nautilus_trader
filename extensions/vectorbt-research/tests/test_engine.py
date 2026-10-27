@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 import vectorbt as vbt
 from vectorbt_research.signals import frozen_signals_to_vectorbt, signals_from_vectorbt
 
@@ -93,3 +94,19 @@ def test_frozen_hand_written_signals_pass_through_vectorbt_in_same_order():
     for record in records:
         assert type(record["start_time_ns"]) is int
         assert type(record["availability_ordinal"]) is int
+
+
+def test_duplicate_quote_times_are_rejected():
+    """duplicate quote times make frozen_signals_to_vectorbt raise ValueError"""
+    frozen_signals = [
+        {
+            "signal_id": "signal-01",
+            "direction": "CALL",
+            "start_time_ns": 1787023260000000000,
+            "availability_ordinal": 1,
+        }
+    ]
+    quote_times_ns = [1787023200000000000, 1787023260000000000, 1787023260000000000]
+
+    with pytest.raises(ValueError, match="quote times must be unique"):
+        frozen_signals_to_vectorbt(frozen_signals, quote_times_ns)

@@ -1,5 +1,6 @@
 import json
 import re
+import uuid
 from copy import deepcopy
 from pathlib import Path
 
@@ -257,3 +258,218 @@ def test_saved_run_writes_and_reopens_all_artifacts(tmp_path, scenario):
     assert run["contracts"].to_dict("records") == record["contracts"]
     assert run["cash"].to_dict("records") == _CASH_ROWS
     assert _summary_fields(run["summary"]) == summary_fields
+
+
+# Required manifest fields and groups from the approved evidence contract (R-18).
+_REQUIRED_MANIFEST_PATHS = [
+    pytest.param(("schema_version",), id="schema_version"),
+    pytest.param(("label",), id="label"),
+    pytest.param(("engine",), id="engine"),
+    pytest.param(("purpose",), id="purpose"),
+    pytest.param(("code_hash",), id="code_hash"),
+    pytest.param(("rule_hash",), id="rule_hash"),
+    pytest.param(("lock_hash",), id="lock_hash"),
+    pytest.param(("strategy",), id="strategy"),
+    pytest.param(("strategy", "source"), id="strategy_source"),
+    pytest.param(("strategy", "hash"), id="strategy_hash"),
+    pytest.param(("strategy", "parameters"), id="strategy_parameters"),
+    pytest.param(("strategy", "seed"), id="strategy_seed"),
+    pytest.param(("scenario",), id="scenario"),
+    pytest.param(("windows",), id="windows"),
+    pytest.param(
+        ("windows", 0, "start_timestamp_ns"), id="windows_0_start_timestamp_ns"
+    ),
+    pytest.param(("windows", 0, "end_timestamp_ns"), id="windows_0_end_timestamp_ns"),
+    pytest.param(("windows", 0, "utc_status"), id="windows_0_utc_status"),
+    pytest.param(
+        ("windows", 0, "utc_offset_seconds"), id="windows_0_utc_offset_seconds"
+    ),
+    pytest.param(("utc_proof_references",), id="utc_proof_references"),
+    pytest.param(("holdout",), id="holdout"),
+    pytest.param(("sources",), id="sources"),
+    pytest.param(("sources", 0, "path"), id="sources_0_path"),
+    pytest.param(("sources", 0, "sha256"), id="sources_0_sha256"),
+    pytest.param(("sources", 0, "first_row"), id="sources_0_first_row"),
+    pytest.param(("sources", 0, "last_row"), id="sources_0_last_row"),
+    pytest.param(("sources", 0, "price_scale"), id="sources_0_price_scale"),
+    pytest.param(("quote_provenance",), id="quote_provenance"),
+    pytest.param(("policies",), id="policies"),
+    pytest.param(("policies", "symbol"), id="policies_symbol"),
+    pytest.param(("policies", "directions"), id="policies_directions"),
+    pytest.param(("policies", "directions", "CALL"), id="policies_directions_CALL"),
+    pytest.param(("policies", "directions", "PUT"), id="policies_directions_PUT"),
+    pytest.param(("policies", "expiry"), id="policies_expiry"),
+    pytest.param(
+        ("policies", "net_payout_basis_points"), id="policies_net_payout_basis_points"
+    ),
+    pytest.param(("policies", "tie_rule"), id="policies_tie_rule"),
+    pytest.param(("policies", "rounding"), id="policies_rounding"),
+    pytest.param(
+        ("policies", "minimum_stake_cents"), id="policies_minimum_stake_cents"
+    ),
+    pytest.param(
+        ("policies", "stake_basis_points_of_available_cash"),
+        id="policies_stake_basis_points_of_available_cash",
+    ),
+    pytest.param(("policies", "cash_rule"), id="policies_cash_rule"),
+    pytest.param(("policies", "max_open_contracts"), id="policies_max_open_contracts"),
+    pytest.param(
+        ("policies", "stale_limit_seconds"), id="policies_stale_limit_seconds"
+    ),
+    pytest.param(("policies", "missing_side_rule"), id="policies_missing_side_rule"),
+    pytest.param(("policies", "order"), id="policies_order"),
+    pytest.param(("information_availability",), id="information_availability"),
+    pytest.param(("selected_prices",), id="selected_prices"),
+    pytest.param(("quote_diagnostics",), id="quote_diagnostics"),
+    pytest.param(
+        ("quote_diagnostics", "skipped_rows"), id="quote_diagnostics_skipped_rows"
+    ),
+    pytest.param(
+        ("quote_diagnostics", "missing_bid"), id="quote_diagnostics_missing_bid"
+    ),
+    pytest.param(
+        ("quote_diagnostics", "missing_ask"), id="quote_diagnostics_missing_ask"
+    ),
+    pytest.param(("counts",), id="counts"),
+    pytest.param(("counts", "signals"), id="counts_signals"),
+    pytest.param(("counts", "contracts"), id="counts_contracts"),
+    pytest.param(("counts", "skipped_signals"), id="counts_skipped_signals"),
+    pytest.param(("counts", "unresolved_contracts"), id="counts_unresolved_contracts"),
+    pytest.param(("completeness",), id="completeness"),
+    pytest.param(("completeness", "status"), id="completeness_status"),
+    pytest.param(("gate",), id="gate"),
+    pytest.param(("gate", "status"), id="gate_status"),
+    pytest.param(("gate", "evidence"), id="gate_evidence"),
+]
+
+# Every manifest integer must reject float and bool values.
+_INTEGER_MANIFEST_PATHS = [
+    pytest.param(("schema_version",), id="schema_version"),
+    pytest.param(
+        ("windows", 0, "start_timestamp_ns"), id="windows_0_start_timestamp_ns"
+    ),
+    pytest.param(("windows", 0, "end_timestamp_ns"), id="windows_0_end_timestamp_ns"),
+    pytest.param(
+        ("windows", 0, "utc_offset_seconds"), id="windows_0_utc_offset_seconds"
+    ),
+    pytest.param(("sources", 0, "first_row"), id="sources_0_first_row"),
+    pytest.param(("sources", 0, "last_row"), id="sources_0_last_row"),
+    pytest.param(("sources", 0, "price_scale"), id="sources_0_price_scale"),
+    pytest.param(
+        ("policies", "net_payout_basis_points"), id="policies_net_payout_basis_points"
+    ),
+    pytest.param(
+        ("policies", "minimum_stake_cents"), id="policies_minimum_stake_cents"
+    ),
+    pytest.param(
+        ("policies", "stake_basis_points_of_available_cash"),
+        id="policies_stake_basis_points_of_available_cash",
+    ),
+    pytest.param(("policies", "max_open_contracts"), id="policies_max_open_contracts"),
+    pytest.param(
+        ("policies", "stale_limit_seconds"), id="policies_stale_limit_seconds"
+    ),
+    pytest.param(
+        ("quote_diagnostics", "skipped_rows"), id="quote_diagnostics_skipped_rows"
+    ),
+    pytest.param(
+        ("quote_diagnostics", "missing_bid"), id="quote_diagnostics_missing_bid"
+    ),
+    pytest.param(
+        ("quote_diagnostics", "missing_ask"), id="quote_diagnostics_missing_ask"
+    ),
+    pytest.param(("counts", "signals"), id="counts_signals"),
+    pytest.param(("counts", "contracts"), id="counts_contracts"),
+    pytest.param(("counts", "skipped_signals"), id="counts_skipped_signals"),
+    pytest.param(("counts", "unresolved_contracts"), id="counts_unresolved_contracts"),
+]
+
+
+def _parent_and_key(data, path):
+    parent = data
+    for key in path[:-1]:
+        parent = parent[key]
+    return parent, path[-1]
+
+
+def _save_manifest(run_dir, manifest):
+    (run_dir / "manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, indent=2), encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize("path", _REQUIRED_MANIFEST_PATHS)
+def test_run_missing_policy_or_provenance_fields_is_rejected(tmp_path, path):
+    """a run missing policy or provenance fields is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    parent, key = _parent_and_key(manifest, path)
+    del parent[key]
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize("path", _INTEGER_MANIFEST_PATHS)
+@pytest.mark.parametrize("coerce", [float, bool], ids=["float", "bool"])
+def test_run_with_non_integer_where_integer_is_required_is_rejected(
+    tmp_path, path, coerce
+):
+    """a float or bool where an integer is required in the manifest is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    parent, key = _parent_and_key(manifest, path)
+    parent[key] = coerce(parent[key])
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize("value", [1_000_000.9, 1_000_000.0, True])
+def test_money_column_rejects_float_and_bool(tmp_path, value):
+    """a float or bool in a money column makes write_run raise TypeError"""
+    record = deepcopy(_RECORD)
+    record["cash"][0]["available_cents"] = value
+
+    with pytest.raises(TypeError, match="available_cents must be an integer"):
+        write_run(record, tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_failed_write_leaves_no_run_folder(tmp_path, monkeypatch):
+    """a write that fails part-way leaves no run-* folder behind"""
+    real_write_table = pq.write_table
+    calls = []
+
+    def fail_on_second_table(table, where, *args, **kwargs):
+        calls.append(where)
+        if len(calls) == 2:
+            raise OSError("simulated disk failure")
+        return real_write_table(table, where, *args, **kwargs)
+
+    monkeypatch.setattr(pq, "write_table", fail_on_second_table)
+
+    with pytest.raises(OSError, match="simulated disk failure"):
+        write_run(deepcopy(_RECORD), tmp_path)
+    assert len(calls) == 2
+    assert not list(tmp_path.glob("run-*"))
+
+
+@pytest.mark.parametrize("leave_file", [False, True])
+def test_write_run_refuses_an_existing_run_folder(tmp_path, monkeypatch, leave_file):
+    """write_run raises FileExistsError and changes nothing when the run folder exists"""
+    run_id = "f" * 32
+    existing = tmp_path / f"run-{run_id}"
+    existing.mkdir()
+    if leave_file:
+        (existing / "keep.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(uuid, "uuid4", lambda: uuid.UUID(hex=run_id))
+
+    with pytest.raises(FileExistsError):
+        write_run(deepcopy(_RECORD), tmp_path)
+    expected = ["keep.txt"] if leave_file else []
+    assert sorted(path.name for path in existing.iterdir()) == expected
+    if leave_file:
+        assert (existing / "keep.txt").read_text(encoding="utf-8") == "keep"
