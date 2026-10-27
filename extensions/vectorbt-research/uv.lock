@@ -169,6 +169,16 @@ wheels = [
 ]
 
 [[package]]
+name = "deriv-mt5"
+version = "0.1.0"
+source = { directory = "../deriv-mt5" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest" }]
+
+[[package]]
 name = "dill"
 version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1002,6 +1012,7 @@ name = "vectorbt-research"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "deriv-mt5" },
     { name = "pyarrow" },
     { name = "vectorbt" },
 ]
@@ -1013,6 +1024,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "deriv-mt5", directory = "../deriv-mt5" },
     { name = "pyarrow", specifier = ">=26.0.0" },
     { name = "vectorbt", specifier = "==1.2.0" },
 ]
