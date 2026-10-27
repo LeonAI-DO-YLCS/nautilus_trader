@@ -20,6 +20,7 @@ import deriv_mt5.rules
 import deriv_mt5.ticks
 import pyarrow.parquet as pq
 
+from vectorbt_research.charts import write_chart
 from vectorbt_research.dataset import check_window_against_csv, read_quote_window
 from vectorbt_research.engine import LedgerResult, run_ledger
 from vectorbt_research.input import ParsedQuote, QuoteDiagnostics, parse_quote_rows
@@ -206,7 +207,9 @@ def _run(
         "contracts": ledger.contracts,
         "cash": ledger.cash,
     }
-    return write_run(record, output_dir)
+    run_dir = write_run(record, output_dir)
+    write_chart(run_dir, quotes)
+    return run_dir
 
 
 def _read_continuation(
