@@ -57,28 +57,31 @@ _SCHEMAS = {
 
 
 # Shape of a saved manifest. A dict lists the required keys of a group. A one-item list
-# is the shape of every item in a list. int means an exact JSON integer, so floats and
-# bools are rejected. object means the key only has to be present.
+# is the shape of every item in a list, and the list must not be empty. int means an
+# exact JSON integer, so floats and bools are rejected. _COUNT is an exact integer that
+# is not negative. str means exact text. object means any value except null. Any other
+# value, such as 1 or "MT5 simulation", must equal that value exactly.
+_COUNT = object()
 _MANIFEST_SHAPE = {
-    "schema_version": int,
-    "label": object,
-    "engine": object,
-    "purpose": object,
-    "code_hash": object,
-    "rule_hash": object,
-    "lock_hash": object,
+    "schema_version": 1,
+    "label": "MT5 simulation",
+    "engine": str,
+    "purpose": str,
+    "code_hash": str,
+    "rule_hash": str,
+    "lock_hash": str,
     "strategy": {
         "source": object,
         "hash": object,
         "parameters": object,
         "seed": object,
     },
-    "scenario": object,
+    "scenario": str,
     "windows": [
         {
             "start_timestamp_ns": int,
             "end_timestamp_ns": int,
-            "utc_status": object,
+            "utc_status": str,
             "utc_offset_seconds": int,
         }
     ],
@@ -86,8 +89,8 @@ _MANIFEST_SHAPE = {
     "holdout": object,
     "sources": [
         {
-            "path": object,
-            "sha256": object,
+            "path": str,
+            "sha256": str,
             "first_row": int,
             "last_row": int,
             "price_scale": int,
@@ -95,31 +98,35 @@ _MANIFEST_SHAPE = {
     ],
     "quote_provenance": object,
     "policies": {
-        "symbol": object,
-        "directions": {"CALL": object, "PUT": object},
-        "expiry": object,
+        "symbol": str,
+        "directions": {"CALL": str, "PUT": str},
+        "expiry": str,
         "net_payout_basis_points": int,
-        "tie_rule": object,
-        "rounding": object,
+        "tie_rule": str,
+        "rounding": str,
         "minimum_stake_cents": int,
         "stake_basis_points_of_available_cash": int,
-        "cash_rule": object,
+        "cash_rule": str,
         "max_open_contracts": int,
         "stale_limit_seconds": int,
-        "missing_side_rule": object,
-        "order": object,
+        "missing_side_rule": str,
+        "order": str,
     },
     "information_availability": object,
     "selected_prices": object,
-    "quote_diagnostics": {"skipped_rows": int, "missing_bid": int, "missing_ask": int},
-    "counts": {
-        "signals": int,
-        "contracts": int,
-        "skipped_signals": int,
-        "unresolved_contracts": int,
+    "quote_diagnostics": {
+        "skipped_rows": _COUNT,
+        "missing_bid": _COUNT,
+        "missing_ask": _COUNT,
     },
-    "completeness": {"status": object},
-    "gate": {"status": object, "evidence": object},
+    "counts": {
+        "signals": _COUNT,
+        "contracts": _COUNT,
+        "skipped_signals": _COUNT,
+        "unresolved_contracts": _COUNT,
+    },
+    "completeness": {"status": str},
+    "gate": {"status": str, "evidence": object},
 }
 
 
@@ -160,8 +167,9 @@ def read_run(path: str | Path) -> dict[str, Any]:
     """
     Read a saved run folder: manifest dict, three pandas DataFrames and summary text.
 
-    Raise ValueError when the manifest lacks a required field or holds a non-integer
-    where an integer is required. A missing file still raises FileNotFoundError.
+    Raise ValueError when the manifest has a missing, null, wrongly typed or out-of-range
+    field, or when a count differs from the rows saved for it. A missing file still raises
+    FileNotFoundError.
     """
     run_dir = Path(path)
     run: dict[str, Any] = {}
@@ -171,8 +179,31 @@ def read_run(path: str | Path) -> dict[str, Any]:
     _check_manifest(run["manifest"], _MANIFEST_SHAPE, "manifest")
     for name in _SCHEMAS:
         run[name] = pq.read_table(run_dir / f"{name}.parquet").to_pandas()
+    _check_counts(run)
     run["summary"] = (run_dir / "summary.txt").read_text(encoding="utf-8")
     return run
+
+
+def _check_counts(run: dict[str, Any]) -> None:
+    """
+    Raise ValueError unless each manifest count matches its saved table.
+
+    counts.contracts counts the contracts rows that are not skipped, because a skipped
+    signal also has a contracts row.
+    """
+    counts = run["manifest"]["counts"]
+    signal_rows = len(run["signals"])
+    if counts["signals"] != signal_rows:
+        raise ValueError(
+            f"manifest.counts.signals is {counts['signals']}, but signals.parquet "
+            f"has {signal_rows} rows"
+        )
+    opened_rows = int((run["contracts"]["status"] != "skipped").sum())
+    if counts["contracts"] != opened_rows:
+        raise ValueError(
+            f"manifest.counts.contracts is {counts['contracts']}, but contracts.parquet "
+            f"has {opened_rows} rows that are not skipped"
+        )
 
 
 def _check_manifest(value: Any, shape: Any, path: str) -> None:
@@ -190,10 +221,25 @@ def _check_manifest(value: Any, shape: Any, path: str) -> None:
     elif isinstance(shape, list):
         if type(value) is not list:
             raise ValueError(f"{path} must be a list, got {type(value).__name__}")
+        if not value:
+            raise ValueError(f"{path} must not be empty")
         for index, item in enumerate(value):
             _check_manifest(item, shape[0], f"{path}[{index}]")
-    elif shape is int and type(value) is not int:
-        raise ValueError(f"{path} must be an integer, got {type(value).__name__}")
+    elif shape is object:
+        if value is None:
+            raise ValueError(f"{path} must not be null")
+    elif shape is str:
+        if type(value) is not str:
+            raise ValueError(f"{path} must be text, got {type(value).__name__}")
+    elif shape is int:
+        if type(value) is not int:
+            raise ValueError(f"{path} must be an integer, got {type(value).__name__}")
+    elif shape is _COUNT:
+        _check_manifest(value, int, path)
+        if value < 0:
+            raise ValueError(f"{path} must not be negative, got {value}")
+    elif type(value) is not type(shape) or value != shape:
+        raise ValueError(f"{path} must be {shape!r}, got {value!r}")
 
 
 def _table(rows: Sequence[Mapping[str, Any]], schema: pa.Schema) -> pa.Table:
