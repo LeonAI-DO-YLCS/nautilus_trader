@@ -1,0 +1,38 @@
+{
+  "source": "story-1-test-list-approval.md: rows S-01 to S-08, Q1 and the independent money check. Literal integers in cents, typed from the approval; never computed by the code under test.",
+  "S-01": [{"available": 1000000, "stake": 500}],
+  "S-02": [{"available": 999500, "stake": 499}],
+  "S-03": [{"available": 69999, "stake": 35}],
+  "S-04": [{"available": 34, "stake": null}],
+  "S-05": [
+    {"stake": 500, "gross": 976},
+    {"stake": 499, "gross": 974},
+    {"stake": 35, "gross": 68}
+  ],
+  "S-06": [
+    {"direction": "CALL", "entry": 100, "exit": 100, "stake": 500, "gross": 0},
+    {"direction": "CALL", "entry": 100, "exit": 99, "stake": 500, "gross": 0},
+    {"direction": "PUT", "entry": 100, "exit": 100, "stake": 500, "gross": 0},
+    {"direction": "PUT", "entry": 100, "exit": 101, "stake": 500, "gross": 0}
+  ],
+  "S-07": [
+    {"direction": "CALL", "entry": 100, "exit": 101, "win": true},
+    {"direction": "CALL", "entry": 100, "exit": 99, "win": false},
+    {"direction": "CALL", "entry": 100, "exit": 100, "win": false},
+    {"direction": "PUT", "entry": 100, "exit": 101, "win": false},
+    {"direction": "PUT", "entry": 100, "exit": 99, "win": true},
+    {"direction": "PUT", "entry": 100, "exit": 100, "win": false}
+  ],
+  "S-08": {
+    "int64_min": -9223372036854775808,
+    "int64_min_minus_1": -9223372036854775809,
+    "int64_max": 9223372036854775807,
+    "int64_max_plus_1": 9223372036854775808,
+    "max_safe_stake": 4725088133634618,
+    "gross_of_max_safe_stake": 9223372036854774,
+    "first_unsafe_stake": 4725088133634619,
+    "credit": 976,
+    "free_before_credit_at_max": 9223372036854774831,
+    "free_one_cent_over": 9223372036854774832
+  }
+}
