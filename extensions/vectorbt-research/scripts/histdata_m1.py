@@ -36,11 +36,11 @@ FORM = ("tk", "date", "datemonth", "platform", "timeframe", "fxpair")
 EST_MS = 5 * 3_600_000
 
 
-def fetch(pair, period, dest):
+def fetch(pair, period, dest, page=PAGE):
     """Download one zip through its token page; skip it when it is already on disk."""
     if dest.exists():
         return
-    page = PAGE.format(pair=pair, period=period)
+    page = page.format(pair=pair, period=period)
     html = urllib.request.urlopen(
         urllib.request.Request(page, headers=HEADERS), timeout=60
     ).read()
