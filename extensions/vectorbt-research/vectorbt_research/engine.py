@@ -51,16 +51,18 @@ _STATUS_NAMES = ("waiting", "open", "settled", "skipped", "unresolved")
     _NO_ENTRY_DATA,
     _STALE_EXIT,
     _DATA_ENDED,
-) = range(8)
+    _WINDOW_END,
+) = range(9)
 _REASON_TEXTS = (
     "",
     "settled at expiry on a fresh last price",
-    "five contracts already open",
-    "available cash is below the minimum stake",
+    "capacity limit: five contracts already open",
+    "insufficient cash: available cash is below the minimum stake",
     "first eligible tick is after expiry",
     "no eligible tick before the data ended",
     "last price before expiry is more than 10 seconds old, stake stays locked",
     "data ended before expiry, stake stays locked",
+    "first eligible tick is at or after the window end",
 )
 
 _OUTCOME_NAMES = ("", "win", "loss")
@@ -111,12 +113,65 @@ class LedgerResult:
     incomplete_reason: str
 
 
+@dataclass
+class _LedgerState:
+    contracts: np.ndarray
+    cash_log: np.ndarray
+    pending: np.ndarray
+    slots: np.ndarray
+    n_pending: int
+    n_slots: int
+    next_start: int
+    available: int
+    locked: int
+    cash_rows: int
+    tail_group: list[tuple[int, int, int, int, int]]
+    previous_row: tuple[int, int, int, int, int] | None
+    last_timestamp: int | None
+    ended_open: int = 0
+
+
+def _validate_run_options(scenario, starting_cash_cents, window_end_ns, compiled):
+    if scenario not in _SCENARIO_COLUMNS:
+        raise ValueError("scenario must be bid, mid or ask")
+    if type(compiled) is not bool:
+        raise TypeError("compiled must be a bool")
+    if compiled:
+        raise NotImplementedError("compiled ledger execution is not implemented yet")
+    checked_cents(starting_cash_cents)
+    if window_end_ns is not None:
+        checked_add(window_end_ns, 0)
+
+
+def _new_core_state(n_signals, starting_cash):
+    contracts = np.zeros((n_signals, _CONTRACT_WIDTH), dtype=np.int64)
+    cash_log = np.zeros((1 + 2 * n_signals, _CASH_WIDTH), dtype=np.int64)
+    _write_cash(cash_log, 0, _INITIAL, -1, 0, 0, starting_cash, 0)
+    return _LedgerState(
+        contracts=contracts,
+        cash_log=cash_log,
+        pending=np.zeros(n_signals, dtype=np.int64),
+        slots=np.zeros(_MAX_OPEN, dtype=np.int64),
+        n_pending=0,
+        n_slots=0,
+        next_start=0,
+        available=starting_cash,
+        locked=0,
+        cash_rows=1,
+        tail_group=[],
+        previous_row=None,
+        last_timestamp=None,
+    )
+
+
 def run_ledger(
     ticks: list[tuple[int, int, int, int, int]],
     signals: list[dict[str, object]],
     *,
     scenario: str,
     starting_cash_cents: int,
+    window_end_ns: int | None = None,
+    compiled: bool = False,
 ) -> LedgerResult:
     """
     Run the cash and contract ledger for one price scenario.
@@ -124,26 +179,146 @@ def run_ledger(
     `ticks` are `(timestamp_ns, ordinal, bid, mid, ask)` ints in source order and `signals`
     are dicts in frozen order. `scenario` ("bid", "mid" or "ask") picks the price column.
     """
-    if scenario not in _SCENARIO_COLUMNS:
-        raise ValueError("scenario must be bid, mid or ask")
-    checked_cents(starting_cash_cents)
+    _validate_run_options(scenario, starting_cash_cents, window_end_ns, compiled)
     tick_table = _tick_table(ticks)
     timestamps = np.ascontiguousarray(tick_table[:, 0])
     if (timestamps[1:] < timestamps[:-1]).any():
         raise ValueError("tick timestamps must not decrease")
     starts, availabilities, is_call = _signal_arrays(signals)
-    contracts, cash_log, cash_rows, ended_open = _run_core(
+    by_start = np.argsort(starts, kind="stable").astype(np.int64)
+    state = _run_core(
         timestamps,
         np.ascontiguousarray(tick_table[:, 1]),
         np.ascontiguousarray(tick_table[:, _SCENARIO_COLUMNS[scenario]]),
         starts,
         availabilities,
         is_call,
-        np.argsort(starts, kind="stable").astype(np.int64),
+        by_start,
         starting_cash_cents,
+        window_end_ns,
     )
     return _build_result(
-        signals, scenario, contracts, cash_log[:cash_rows], int(ended_open)
+        signals,
+        scenario,
+        state.contracts,
+        state.cash_log[: state.cash_rows],
+        state.ended_open,
+    )
+
+
+def _process_chunk_group(
+    state,
+    group_rows,
+    previous_row,
+    starts,
+    availabilities,
+    is_call,
+    by_start,
+    starting_cash,
+    window_end_ns,
+    price_column,
+):
+    rows = [*([previous_row] if previous_row is not None else []), *group_rows]
+    table = _tick_table(rows)
+    timestamps = np.ascontiguousarray(table[:, 0])
+    return _run_core(
+        timestamps,
+        np.ascontiguousarray(table[:, 1]),
+        np.ascontiguousarray(table[:, price_column]),
+        starts,
+        availabilities,
+        is_call,
+        by_start,
+        starting_cash,
+        window_end_ns,
+        state=state,
+        start_index=1 if previous_row is not None else 0,
+        finalize=False,
+    )
+
+
+def run_ledger_chunks(
+    chunks,
+    signals: list[dict[str, object]],
+    *,
+    scenario: str,
+    starting_cash_cents: int,
+    window_end_ns: int | None = None,
+    compiled: bool = False,
+) -> LedgerResult:
+    """
+    Run the ledger incrementally while retaining only one incomplete timestamp group.
+
+    A group is processed when a later timestamp completes it. The previous group's last row
+    remains available for expiry selection. The final tail group is processed before end-of-data
+    handling.
+    """
+    _validate_run_options(scenario, starting_cash_cents, window_end_ns, compiled)
+    starts, availabilities, is_call = _signal_arrays(signals)
+    by_start = np.argsort(starts, kind="stable").astype(np.int64)
+    state = _new_core_state(len(signals), starting_cash_cents)
+    price_column = _SCENARIO_COLUMNS[scenario]
+
+    for chunk in chunks:
+        table = _tick_table(chunk)
+        for row_index in range(table.shape[0]):
+            row = tuple(int(value) for value in table[row_index])
+            if state.last_timestamp is not None and row[0] < state.last_timestamp:
+                raise ValueError("tick timestamps must not decrease")
+            if state.tail_group and row[0] != state.tail_group[-1][0]:
+                state = _process_chunk_group(
+                    state,
+                    state.tail_group,
+                    state.previous_row,
+                    starts,
+                    availabilities,
+                    is_call,
+                    by_start,
+                    starting_cash_cents,
+                    window_end_ns,
+                    price_column,
+                )
+                state.previous_row = state.tail_group[-1]
+                state.tail_group.clear()
+            state.tail_group.append(row)
+            state.last_timestamp = row[0]
+
+    if state.tail_group:
+        state = _process_chunk_group(
+            state,
+            state.tail_group,
+            state.previous_row,
+            starts,
+            availabilities,
+            is_call,
+            by_start,
+            starting_cash_cents,
+            window_end_ns,
+            price_column,
+        )
+        state.previous_row = state.tail_group[-1]
+        state.tail_group.clear()
+
+    empty = np.empty(0, dtype=np.int64)
+    state = _run_core(
+        empty,
+        empty,
+        empty,
+        starts,
+        availabilities,
+        is_call,
+        by_start,
+        starting_cash_cents,
+        window_end_ns,
+        state=state,
+        finalize=True,
+    )
+    return _build_result(
+        signals,
+        scenario,
+        state.contracts,
+        state.cash_log[: state.cash_rows],
+        state.ended_open,
     )
 
 
@@ -270,37 +445,41 @@ def _run_core(
     is_call,
     by_start,
     starting_cash,
+    window_end_ns,
+    *,
+    state=None,
+    start_index=0,
+    finalize=True,
 ):
     """
-    Walk the ticks once, one timestamp group at a time, and fill the contract and cash tables.
+    Process complete timestamp groups through the shared ledger state machine.
 
-    Return the contract table, the cash table, the number of cash rows used, and the number
-    of contracts still open when the data ended.
+    Chunk callers may provide the previous group row before the first group and set the starting
+    index to 1. Whole-array runs use the full arrays and start at index 0.
     """
     n_ticks = timestamps.shape[0]
     n_signals = starts.shape[0]
-    contracts = np.zeros((n_signals, _CONTRACT_WIDTH), dtype=np.int64)
-    cash_log = np.zeros((1 + 2 * n_signals, _CASH_WIDTH), dtype=np.int64)
-    pending = np.zeros(
-        n_signals, dtype=np.int64
-    )  # started, not yet entered; list order
-    slots = np.zeros(_MAX_OPEN, dtype=np.int64)  # open or unresolved; admission order
-    n_pending = 0
-    n_slots = 0
-    next_start = 0
-    available = starting_cash
-    locked = 0
-    _write_cash(cash_log, 0, _INITIAL, -1, 0, 0, available, locked)
-    cash_rows = 1
+    if state is None:
+        state = _new_core_state(n_signals, starting_cash)
 
-    group_start = 0
+    contracts = state.contracts
+    cash_log = state.cash_log
+    pending = state.pending
+    slots = state.slots
+    n_pending = state.n_pending
+    n_slots = state.n_slots
+    next_start = state.next_start
+    available = state.available
+    locked = state.locked
+    cash_rows = state.cash_rows
+
+    group_start = start_index
     while group_start < n_ticks:
         group_ns = timestamps[group_start]
         group_end = group_start + 1
         while group_end < n_ticks and timestamps[group_end] == group_ns:
             group_end += 1
 
-        # A due exit looks at the previous source row (when there is one) and this group.
         exit_begin = group_start - 1 if group_start > 0 else 0
 
         # Settle due contracts in admission order.
@@ -346,6 +525,9 @@ def _run_core(
         kept = 0
         for position in range(n_pending):
             index = pending[position]
+            if window_end_ns is not None and starts[index] >= window_end_ns:
+                _skip(contracts, index, _WINDOW_END)
+                continue
             expiry = expiry_ns(int(starts[index]))
             entry_tick = entry_index_in_range(
                 timestamps,
@@ -356,11 +538,16 @@ def _run_core(
                 int(availabilities[index]),
             )
             if entry_tick < 0:
-                if group_ns > expiry:  # no row of this group can be in time: too late
+                if window_end_ns is not None and group_ns >= window_end_ns:
+                    _skip(contracts, index, _WINDOW_END)
+                elif group_ns > expiry:
                     _skip(contracts, index, _ENTRY_LATE)
-                else:  # rows are in time but none is available yet
+                else:
                     pending[kept] = index
                     kept += 1
+                continue
+            if window_end_ns is not None and timestamps[entry_tick] >= window_end_ns:
+                _skip(contracts, index, _WINDOW_END)
                 continue
             if n_slots >= _MAX_OPEN:
                 _skip(contracts, index, _FULL)
@@ -386,7 +573,7 @@ def _run_core(
             available = new_available
             locked = new_locked
             contracts[index, _STATUS] = _OPEN
-            contracts[index, _REASON] = _DATA_ENDED  # replaced when it settles
+            contracts[index, _REASON] = _DATA_ENDED
             contracts[index, _ENTRY_ORDINAL] = ordinals[entry_tick]
             contracts[index, _ENTRY_NS] = timestamps[entry_tick]
             contracts[index, _EXPIRY_NS] = expiry
@@ -396,8 +583,7 @@ def _run_core(
             n_slots += 1
         n_pending = kept
 
-        # A contract admitted at its own expiry settles now on this group's last row, with no
-        # later tick needed. Admission is not run again, so skipped signals stay skipped.
+        # Settle contracts admitted at their expiry on this group's last source row.
         kept = 0
         for position in range(n_slots):
             index = slots[position]
@@ -427,16 +613,29 @@ def _run_core(
 
         group_start = group_end
 
-    # The data is over: what is still open keeps its stake locked, what never entered is skipped.
-    ended_open = 0
-    for index in range(n_signals):
-        if contracts[index, _STATUS] == _OPEN:
-            contracts[index, _STATUS] = _UNRESOLVED
-            contracts[index, _REASON] = _DATA_ENDED
-            ended_open += 1
-        elif contracts[index, _STATUS] == _WAITING:
-            _skip(contracts, index, _NO_ENTRY_DATA)
-    return contracts, cash_log, cash_rows, ended_open
+    state.n_pending = n_pending
+    state.n_slots = n_slots
+    state.next_start = next_start
+    state.available = available
+    state.locked = locked
+    state.cash_rows = cash_rows
+
+    if finalize:
+        ended_open = 0
+        for index in range(n_signals):
+            if contracts[index, _STATUS] == _OPEN:
+                contracts[index, _STATUS] = _UNRESOLVED
+                contracts[index, _REASON] = _DATA_ENDED
+                ended_open += 1
+            elif contracts[index, _STATUS] == _WAITING:
+                reason = (
+                    _WINDOW_END
+                    if window_end_ns is not None and starts[index] >= window_end_ns
+                    else _NO_ENTRY_DATA
+                )
+                _skip(contracts, index, reason)
+        state.ended_open = ended_open
+    return state
 
 
 def _build_result(
