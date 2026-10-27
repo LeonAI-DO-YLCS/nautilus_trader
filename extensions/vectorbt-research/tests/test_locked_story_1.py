@@ -351,8 +351,17 @@ def test_e2e_5_tick_boundaries_missing_quotes_and_tie_are_persisted(
     contract = _contract(age_eleven)
     assert contract["status"] == "unresolved"
     assert str(contract["reason"]).strip()
-    assert contract["exit_timestamp_ns"] == pd.Timestamp(_timestamp(49)).value
+    assert contract["outcome"] == ""
+    assert contract["entry_ordinal"] == 40
+    assert contract["entry_timestamp_ns"] == pd.Timestamp(_timestamp(2)).value
+    assert contract["expiry_timestamp_ns"] == pd.Timestamp(_timestamp(60)).value
+    assert contract["entry_spot"] == 20000
+    assert contract["stake_cents"] == 500
+    assert contract["exit_ordinal"] == 0
+    assert contract["exit_timestamp_ns"] == 0
+    assert contract["exit_spot"] == 0
     assert contract["gross_credit_cents"] == 0
+    assert contract["net_cents"] == 0
     assert not (age_eleven["cash"]["event"] == "settlement").any()
     assert _state(age_eleven["cash"].iloc[-1]) == (999500, 500)
 
