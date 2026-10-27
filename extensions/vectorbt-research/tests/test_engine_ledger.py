@@ -1,6 +1,7 @@
-"""Ledger loop tests R-06 to R-12.
+"""Ledger loop tests R-06 to R-16.
 
-Engine API these tests set (later ledger tests R-13 to R-16 and the runner reuse it):
+Engine API these tests set (the runner reuses it; R-13 to R-16 add `window_end_ns`,
+`compiled` and `run_ledger_chunks`, described above R-13 below):
 
     from vectorbt_research.engine import run_ledger
 
@@ -750,4 +751,585 @@ def test_each_bid_mid_and_ask_scenario_starts_independently_at_10_000_00_usd():
                 _cash("settlement", "signal-1", (999_500, 500), (final_free, 0)),
             ],
             label=f"asymmetric {scenario}",
+        )
+
+
+# --- R-13 to R-16: continuation, data exhaustion, chunks, overflow --------------------------
+#
+# Engine API these tests add (names fixed by the navigator review, story-1-ledger-red-review.md):
+#
+# - `run_ledger(..., window_end_ns=None)`: the end of the selected window, in UTC nanoseconds
+#   (the first nanosecond after the window, so the end itself is outside).
+#   A signal whose `start_time_ns` is at or after it is a continuation signal: it is never
+#   admitted and its contract row is a skipped row (the R-09 shape) with a nonempty reason.
+#   Ticks after the window are still read, so contracts that entered inside the window settle
+#   from them (S3). `None` means there is no window end (R-06 to R-12 behavior).
+# - `run_ledger(..., compiled=False)`: `False` (the default) runs the Python loop and
+#   `compiled=True` runs the compiled loop. Both must give the same `LedgerResult`.
+# - `run_ledger_chunks(chunks, signals, *, scenario, starting_cash_cents, window_end_ns=None,
+#   compiled=False)`: `chunks` is an iterable of tick lists whose concatenation is the whole
+#   tick list. It returns the same `LedgerResult` as `run_ledger` on the concatenation. A chunk
+#   may end inside a timestamp group: nothing settles or enters until that group is complete
+#   (a later timestamp arrives or the chunks end). Empty chunks are allowed.
+#
+# R-13 to R-16 pass `compiled=False` and `compiled=True` explicitly, so changing the engine's
+# default path cannot turn the Python half of a comparison into a second compiled run.
+
+
+def _run(
+    ticks,
+    signals,
+    *,
+    starting_cash_cents,
+    scenario="bid",
+    compiled=None,
+    window_end_ns=None,
+):
+    """Call `run_ledger`, passing `compiled` and `window_end_ns` only when they are given."""
+    options = {}
+    if compiled is not None:
+        options["compiled"] = compiled
+    if window_end_ns is not None:
+        options["window_end_ns"] = window_end_ns
+    return run_ledger(
+        ticks,
+        signals,
+        scenario=scenario,
+        starting_cash_cents=starting_cash_cents,
+        **options,
+    )
+
+
+def _assert_overflows(ticks, signals, *, starting_cash_cents, compiled):
+    """The run raises `OverflowError`, returns nothing, and leaves its inputs unchanged."""
+    ticks_before = [tuple(tick) for tick in ticks]
+    signals_before = [dict(signal) for signal in signals]
+    result = None
+    try:
+        result = _run(
+            ticks,
+            signals,
+            starting_cash_cents=starting_cash_cents,
+            compiled=compiled,
+        )
+    except OverflowError:
+        pass
+    else:
+        raise AssertionError(f"no OverflowError (compiled={compiled}): {result}")
+    assert result is None
+    assert ticks == ticks_before
+    assert signals == signals_before
+
+
+def test_continuation_past_the_window_settles_existing_contracts_only():
+    """continuation past the window settles existing contracts only"""
+    # The window ends at 30 s. Signal 1 (CALL) starts at 0 s inside the window, enters at 2 s
+    # (500 stake) and expires at 60 s, after the window. Continuation data settles it: the
+    # last row at 60 s is 20400, above the entry 20000, so it wins 976 and the run ends at
+    # 1000476 free and 0 locked. Signal 2 starts exactly at the window end (30 s) and signal
+    # 3 at 45 s. Both have a tick to enter on (ordinals 2 and 3), so only the window stops
+    # them: they must admit no contract and add no cash row. A tick after expiry (61 s) must
+    # change nothing.
+    ticks = [
+        _tick(2, 1, 20_000),
+        _tick(30, 2, 20_100),
+        _tick(45, 3, 20_200),
+        _tick(60, 4, 20_400),
+        _tick(61, 5, 21_000),
+    ]
+    signals = [
+        _signal("signal-1", "CALL", 0, 1),
+        _signal("signal-2", "CALL", 30, 1),
+        _signal("signal-3", "PUT", 45, 1),
+    ]
+
+    for compiled in (False, True):
+        result = _run(
+            ticks,
+            signals,
+            starting_cash_cents=1_000_000,
+            window_end_ns=_T0 + 30 * _SEC,
+            compiled=compiled,
+        )
+
+        _assert_run(
+            result,
+            contracts=[
+                _settled(
+                    "signal-1",
+                    "CALL",
+                    "win",
+                    entry_ordinal=1,
+                    exit_ordinal=4,
+                    entry_s=2,
+                    expiry_s=60,
+                    exit_s=60,
+                    entry_spot=20_000,
+                    exit_spot=20_400,
+                    stake=500,
+                    gross=976,
+                    net=476,
+                ),
+                _skipped("signal-2", "CALL"),
+                _skipped("signal-3", "PUT"),
+            ],
+            cash=[
+                _cash("initial", "", (0, 0), (1_000_000, 0)),
+                _cash("entry", "signal-1", (1_000_000, 0), (999_500, 500)),
+                _cash("settlement", "signal-1", (999_500, 500), (1_000_476, 0)),
+            ],
+            skipped_count=2,
+            unresolved_count=0,
+        )
+        assert result.incomplete is False
+
+        # Control: without a window end the same signals do enter, so the window is what stops them.
+        control = _run(ticks, signals, starting_cash_cents=1_000_000, compiled=compiled)
+        assert [
+            row["signal_id"] for row in control.cash if row["event"] == "entry"
+        ] == [
+            "signal-1",
+            "signal-2",
+            "signal-3",
+        ]
+
+
+def test_true_data_exhaustion_marks_the_run_incomplete_and_keeps_locked_stakes():
+    """true data exhaustion marks the run incomplete and keeps locked stakes"""
+    # Signal 1 (CALL) enters at 2 s (stake 500) and expires at 60 s. The data ends at 55 s
+    # (ordinal 3, price 20400, a winning price only 5 s before expiry), so no row at or after
+    # expiry exists. The contract stays unresolved: 500 locked, free 999500, no settlement
+    # row, no refund, no gross or net, and the run is incomplete with a reason. Settling on
+    # the last available price would be an invented settlement.
+    ticks = [_tick(2, 1, 20_000), _tick(30, 2, 20_200), _tick(55, 3, 20_400)]
+    signals = [_signal("signal-1", "CALL", 0, 1)]
+
+    for compiled in (False, True):
+        result = _run(ticks, signals, starting_cash_cents=1_000_000, compiled=compiled)
+
+        _assert_run(
+            result,
+            contracts=[
+                _unresolved(
+                    "signal-1",
+                    "CALL",
+                    entry_ordinal=1,
+                    entry_s=2,
+                    expiry_s=60,
+                    entry_spot=20_000,
+                    stake=500,
+                )
+            ],
+            cash=[
+                _cash("initial", "", (0, 0), (1_000_000, 0)),
+                _cash("entry", "signal-1", (1_000_000, 0), (999_500, 500)),
+            ],
+            skipped_count=0,
+            unresolved_count=1,
+        )
+        assert result.incomplete is True
+        assert result.incomplete_reason.strip()
+
+        # Control: one more row at expiry settles the same contract and the run is complete, so
+        # the data ending before expiry is what makes the first run incomplete.
+        control = _run(
+            [*ticks, _tick(60, 4, 20_400)],
+            signals,
+            starting_cash_cents=1_000_000,
+            compiled=compiled,
+        )
+        _assert_ledger(
+            control,
+            contracts=[
+                _settled(
+                    "signal-1",
+                    "CALL",
+                    "win",
+                    entry_ordinal=1,
+                    exit_ordinal=4,
+                    entry_s=2,
+                    expiry_s=60,
+                    exit_s=60,
+                    entry_spot=20_000,
+                    exit_spot=20_400,
+                    stake=500,
+                    gross=976,
+                    net=476,
+                )
+            ],
+            cash=[
+                _cash("initial", "", (0, 0), (1_000_000, 0)),
+                _cash("entry", "signal-1", (1_000_000, 0), (999_500, 500)),
+                _cash("settlement", "signal-1", (999_500, 500), (1_000_476, 0)),
+            ],
+        )
+
+
+# The R-07 timestamp-group fixture again (the R-07 test keeps its copy inline): the group at
+# +60 s holds ordinals 2, 3 and 4. R-15 splits it between chunks.
+_R07_TICKS = [
+    _tick(2, 1, 20_000),
+    _tick(60, 2, 19_800),
+    _tick(60, 3, 20_000),
+    _tick(60, 4, 20_600),
+    _tick(120, 5, 19_600),
+    _tick(121, 6, 19_000),
+]
+_R07_SIGNALS = [
+    _signal("signal-1", "CALL", 0, 1),
+    _signal("signal-2", "PUT", 60, 1),
+    _signal("signal-3", "CALL", 60, 1),
+]
+
+
+def _r07_contracts():
+    return [
+        _settled(
+            "signal-1",
+            "CALL",
+            "win",
+            entry_ordinal=1,
+            exit_ordinal=4,
+            entry_s=2,
+            expiry_s=60,
+            exit_s=60,
+            entry_spot=20_000,
+            exit_spot=20_600,
+            stake=500,
+            gross=976,
+            net=476,
+        ),
+        _settled(
+            "signal-2",
+            "PUT",
+            "win",
+            entry_ordinal=2,
+            exit_ordinal=5,
+            entry_s=60,
+            expiry_s=120,
+            exit_s=120,
+            entry_spot=19_800,
+            exit_spot=19_600,
+            stake=500,
+            gross=976,
+            net=476,
+        ),
+        _settled(
+            "signal-3",
+            "CALL",
+            "loss",
+            entry_ordinal=2,
+            exit_ordinal=5,
+            entry_s=60,
+            expiry_s=120,
+            exit_s=120,
+            entry_spot=19_800,
+            exit_spot=19_600,
+            stake=499,
+            gross=0,
+            net=-499,
+        ),
+    ]
+
+
+def _r07_cash():
+    return [
+        _cash("initial", "", (0, 0), (1_000_000, 0)),
+        _cash("entry", "signal-1", (1_000_000, 0), (999_500, 500)),
+        _cash("settlement", "signal-1", (999_500, 500), (1_000_476, 0)),
+        _cash("entry", "signal-2", (1_000_476, 0), (999_976, 500)),
+        _cash("entry", "signal-3", (999_976, 500), (999_477, 999)),
+        _cash("settlement", "signal-2", (999_477, 999), (1_000_453, 499)),
+        _cash("settlement", "signal-3", (1_000_453, 499), (1_000_453, 0)),
+    ]
+
+
+def test_a_chunked_run_equals_the_whole_array_run_including_a_same_time_chunk_boundary():
+    """a chunked run equals the whole-array run, including a same-time chunk boundary"""
+    # The R-07 fixture split into chunks. Cuts after 2 and after 3 ticks fall inside the +60 s
+    # group (ordinals 2 | 3, 4 and 2, 3 | 4). Nothing may settle or enter at a chunk end: an
+    # early settlement would exit on ordinal 2 (a loss) or 3 (a tie) instead of 4 (a win), and
+    # an early entry would enter signal 2 before signal 1's win released its cash. Every split
+    # must give the literal R-07 contracts, cash rows and counts, and equal the whole-array
+    # result, in the Python loop and in the compiled loop.
+    # The chunk API does not exist yet, so it is imported here: a module-level import would
+    # stop every ledger test above from being collected.
+    from vectorbt_research.engine import run_ledger_chunks
+
+    ticks = _R07_TICKS
+    splits = {
+        "cut inside the group after ordinal 2": [ticks[:2], ticks[2:]],
+        "cut inside the group after ordinal 3": [ticks[:3], ticks[3:]],
+        "cut before the group": [ticks[:1], ticks[1:]],
+        "cut after the group": [ticks[:4], ticks[4:]],
+        "cut between the last two ticks": [ticks[:5], ticks[5:]],
+        "one tick per chunk": [[tick] for tick in ticks],
+        "empty chunks around a group cut": [
+            [],
+            ticks[:2],
+            [],
+            ticks[2:3],
+            ticks[3:],
+            [],
+        ],
+    }
+    whole_results = []
+    for compiled in (False, True):
+        whole = _run(
+            ticks, _R07_SIGNALS, starting_cash_cents=1_000_000, compiled=compiled
+        )
+        _assert_ledger(
+            whole,
+            contracts=_r07_contracts(),
+            cash=_r07_cash(),
+            label=f"whole array, compiled={compiled}",
+        )
+        whole_results.append(whole)
+        for name, chunks in splits.items():
+            chunked = run_ledger_chunks(
+                iter(chunks),
+                _R07_SIGNALS,
+                scenario="bid",
+                starting_cash_cents=1_000_000,
+                compiled=compiled,
+            )
+            _assert_ledger(
+                chunked,
+                contracts=_r07_contracts(),
+                cash=_r07_cash(),
+                label=f"{name}, compiled={compiled}",
+            )
+            assert chunked == whole, (name, compiled)
+    assert whole_results[0] == whole_results[1]
+
+    # The window end passed to chunks. The window ends at the +60 s group, so signals 2 and 3
+    # (they start at +60 s) are continuation signals: skipped, no cash row. Signal 1 still wins
+    # from that group's last row even when a chunk ends inside the group.
+    window_end_ns = _T0 + 60 * _SEC
+    for compiled in (False, True):
+        whole = _run(
+            ticks,
+            _R07_SIGNALS,
+            starting_cash_cents=1_000_000,
+            compiled=compiled,
+            window_end_ns=window_end_ns,
+        )
+        _assert_run(
+            whole,
+            contracts=[
+                _r07_contracts()[0],
+                _skipped("signal-2", "PUT"),
+                _skipped("signal-3", "CALL"),
+            ],
+            cash=_r07_cash()[:3],
+            skipped_count=2,
+            unresolved_count=0,
+        )
+        assert whole.incomplete is False
+        for name, chunks in splits.items():
+            chunked = run_ledger_chunks(
+                iter(chunks),
+                _R07_SIGNALS,
+                scenario="bid",
+                starting_cash_cents=1_000_000,
+                window_end_ns=window_end_ns,
+                compiled=compiled,
+            )
+            assert chunked == whole, ("window end", name, compiled)
+
+
+# Q1 literals of the shared rule: 976 is the gross credit of a 500-cent stake, and the signed
+# 64-bit maximum minus 976 plus 976 reaches the maximum exactly.
+_INT64_MAX = 9_223_372_036_854_775_807
+_Q1_FREE_AT_MAX = 9_223_372_036_854_774_831  # max - 976
+_Q1_FREE_ONE_OVER = 9_223_372_036_854_774_832  # max - 975
+_Q1_CREDIT = 976
+
+# The ledger sets the stake from free cash (0.05%), so a 976 credit never meets a free balance
+# near the maximum. These starting cash values reproduce the same boundary through the ledger.
+# A CALL wins in both: free cash S gives stake S // 2000 = 4609491900282853 and gross
+# 4609491900282853 * 1952 // 1000 = 8997728189352129. After the entry free cash is
+# S - 4609491900282853 and the win adds the gross. With S = 9218983800565706531 the sum is
+# exactly the maximum; one cent more (S = 9218983800565706532) is one over it.
+_AT_MAX_START = 9_218_983_800_565_706_531
+_OVER_MAX_START = 9_218_983_800_565_706_532
+_BIG_STAKE = 4_609_491_900_282_853
+_BIG_GROSS = 8_997_728_189_352_129
+_BIG_NET = 4_388_236_289_069_276  # gross - stake
+_AT_MAX_AFTER_ENTRY = 9_214_374_308_665_423_678  # _AT_MAX_START - _BIG_STAKE
+# Starting at the maximum itself, the stake is 4611686018427387; a loss leaves the rest free.
+_MAX_START_STAKE = 4_611_686_018_427_387
+_MAX_START_AFTER_LOSS = 9_218_760_350_836_348_420  # max - 4611686018427387
+_NEAR_MAX_NS = _INT64_MAX - 1  # a start whose expiry (start + 60 s) does not fit
+
+
+def _big_ticks(exit_price):
+    return [_tick(0, 1, 20_000), _tick(60, 2, exit_price), _tick(61, 3, 21_000)]
+
+
+def test_integer_overflow_in_the_compiled_loop_fails_visibly():
+    """integer overflow in the compiled loop fails visibly"""
+    # The Q1 literals hold in the shared rule that the loop uses (they cannot be reached
+    # through the ledger itself, see the comment above the constants). Imported here only
+    # for these two literal anchors.
+    from deriv_mt5.rules import checked_add
+
+    assert checked_add(_Q1_FREE_AT_MAX, _Q1_CREDIT) == _INT64_MAX
+    try:
+        checked_add(_Q1_FREE_ONE_OVER, _Q1_CREDIT)
+    except OverflowError:
+        pass
+    else:
+        raise AssertionError("max - 975 + 976 did not raise OverflowError")
+
+    signals = [_signal("signal-1", "CALL", 0, 1)]
+    for compiled in (False, True):
+        label = f"compiled={compiled}"
+        # Safe addition reaches the maximum: the win credit lands exactly on 2**63 - 1.
+        at_max = _run(
+            _big_ticks(20_400),
+            signals,
+            starting_cash_cents=_AT_MAX_START,
+            compiled=compiled,
+        )
+        _assert_ledger(
+            at_max,
+            contracts=[
+                _settled(
+                    "signal-1",
+                    "CALL",
+                    "win",
+                    entry_ordinal=1,
+                    exit_ordinal=2,
+                    entry_s=0,
+                    expiry_s=60,
+                    exit_s=60,
+                    entry_spot=20_000,
+                    exit_spot=20_400,
+                    stake=_BIG_STAKE,
+                    gross=_BIG_GROSS,
+                    net=_BIG_NET,
+                )
+            ],
+            cash=[
+                _cash("initial", "", (0, 0), (_AT_MAX_START, 0)),
+                _cash(
+                    "entry",
+                    "signal-1",
+                    (_AT_MAX_START, 0),
+                    (_AT_MAX_AFTER_ENTRY, _BIG_STAKE),
+                ),
+                _cash(
+                    "settlement",
+                    "signal-1",
+                    (_AT_MAX_AFTER_ENTRY, _BIG_STAKE),
+                    (_INT64_MAX, 0),
+                ),
+            ],
+            label=label,
+        )
+
+        # One cent more free cash makes the credit overflow (max + 1): the run fails with
+        # no report and no wrapped balance.
+        _assert_overflows(
+            _big_ticks(20_400),
+            signals,
+            starting_cash_cents=_OVER_MAX_START,
+            compiled=compiled,
+        )
+        # Same start, but the contract loses: no credit, so no overflow and a normal report.
+        lost = _run(
+            _big_ticks(19_800),
+            signals,
+            starting_cash_cents=_OVER_MAX_START,
+            compiled=compiled,
+        )
+        assert [row["status"] for row in lost.contracts] == ["settled"]
+        assert [row["outcome"] for row in lost.contracts] == ["loss"]
+        assert (lost.cash[-1]["available_cents"], lost.cash[-1]["locked_cents"]) == (
+            _OVER_MAX_START - _BIG_STAKE,
+            0,
+        )
+
+        # An input one above the maximum fails; the maximum itself is a valid input.
+        _assert_overflows(
+            _big_ticks(19_800),
+            signals,
+            starting_cash_cents=_INT64_MAX + 1,
+            compiled=compiled,
+        )
+        at_input_max = _run(
+            _big_ticks(19_800),
+            signals,
+            starting_cash_cents=_INT64_MAX,
+            compiled=compiled,
+        )
+        assert at_input_max.cash == [
+            _cash("initial", "", (0, 0), (_INT64_MAX, 0)),
+            _cash(
+                "entry",
+                "signal-1",
+                (_INT64_MAX, 0),
+                (_INT64_MAX - _MAX_START_STAKE, _MAX_START_STAKE),
+            ),
+            _cash(
+                "settlement",
+                "signal-1",
+                (_INT64_MAX - _MAX_START_STAKE, _MAX_START_STAKE),
+                (_MAX_START_AFTER_LOSS, 0),
+            ),
+        ]
+
+        # A start whose expiry does not fit in 64 bits fails; it is not a skipped contract.
+        _assert_overflows(
+            [(_NEAR_MAX_NS, 1, 20_000, 20_000, 20_000)],
+            [
+                {
+                    "signal_id": "signal-1",
+                    "direction": "CALL",
+                    "start_time_ns": _NEAR_MAX_NS,
+                    "availability_ordinal": 1,
+                }
+            ],
+            starting_cash_cents=1_000_000,
+            compiled=compiled,
+        )
+
+        # Normal money stays exact: the R-06 win, 1000000 -> 999500/500 -> 1000476/0.
+        normal = _run(
+            [
+                _tick(2, 1, 20_000),
+                _tick(30, 2, 20_200),
+                _tick(60, 3, 20_400),
+                _tick(61, 4, 21_000),
+            ],
+            signals,
+            starting_cash_cents=1_000_000,
+            compiled=compiled,
+        )
+        _assert_ledger(
+            normal,
+            contracts=[
+                _settled(
+                    "signal-1",
+                    "CALL",
+                    "win",
+                    entry_ordinal=1,
+                    exit_ordinal=3,
+                    entry_s=2,
+                    expiry_s=60,
+                    exit_s=60,
+                    entry_spot=20_000,
+                    exit_spot=20_400,
+                    stake=500,
+                    gross=976,
+                    net=476,
+                )
+            ],
+            cash=[
+                _cash("initial", "", (0, 0), (1_000_000, 0)),
+                _cash("entry", "signal-1", (1_000_000, 0), (999_500, 500)),
+                _cash("settlement", "signal-1", (999_500, 500), (1_000_476, 0)),
+            ],
+            label=label,
         )
