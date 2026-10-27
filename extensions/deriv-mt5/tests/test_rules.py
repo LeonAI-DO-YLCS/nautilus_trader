@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from deriv_mt5 import rules
 
 FIXTURE = Path(__file__).parent / "fixtures" / "money_outcome_cases.json"
@@ -53,7 +52,9 @@ def test_s06_loss_or_tie_credits_zero():
 def test_s07_direction_and_ties_lose():
     """CALL=Rise: exit > entry; PUT=Fall: exit < entry; ties lose"""
     for case in CASES["S-07"]:
-        assert rules.is_win(case["direction"], case["entry"], case["exit"]) is case["win"]
+        assert (
+            rules.is_win(case["direction"], case["entry"], case["exit"]) is case["win"]
+        )
 
 
 def test_s08_guard_range_raises_no_wrap():
@@ -65,9 +66,14 @@ def test_s08_guard_range_raises_no_wrap():
         rules.checked_cents(g["int64_max_plus_1"])
     with pytest.raises(OverflowError):
         rules.checked_cents(g["int64_min_minus_1"])
-    assert rules.gross_credit_cents(g["max_safe_stake"], won=True) == g["gross_of_max_safe_stake"]
+    assert (
+        rules.gross_credit_cents(g["max_safe_stake"], won=True)
+        == g["gross_of_max_safe_stake"]
+    )
     with pytest.raises(OverflowError):
         rules.gross_credit_cents(g["first_unsafe_stake"], won=True)
-    assert rules.checked_add(g["free_before_credit_at_max"], g["credit"]) == g["int64_max"]
+    assert (
+        rules.checked_add(g["free_before_credit_at_max"], g["credit"]) == g["int64_max"]
+    )
     with pytest.raises(OverflowError):
         rules.checked_add(g["free_one_cent_over"], g["credit"])

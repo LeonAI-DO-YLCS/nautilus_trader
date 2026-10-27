@@ -5,7 +5,6 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-
 from vectorbt_research.dataset import read_quote_window
 from vectorbt_research.reports import read_run
 from vectorbt_research.runner import run_story_1_window
