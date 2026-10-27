@@ -159,6 +159,16 @@ and take precedence over the generic contributor guidance above where they diffe
   is in plain words, what happened, what each option changes, and an example. Give each option its
   pros and cons, and a recommendation with the reason.
 
+### Memory and retrieval
+
+- Every agent uses Engram, CodeGraph and zvec-grep on every task: search before work, save every
+  outcome to Engram after work (always `--project nautilus-trader`), and keep the indexes current
+  with each change.
+- Run the three tools on Windows only, in `C:\LeonAI-DO\dev\TRADING\nautilus_trader`. Never install,
+  index or run them inside WSL. Their indexes show the branch checked out in the Windows copy;
+  refresh them (`codegraph sync`, `zg index`) after each change reaches that copy.
+- If a tool breaks, reinstall it, but first back up its old index or database. No data loss.
+
 ### Safety
 
 - Never place real-money trades, log in to broker accounts, or read credential files unless the
