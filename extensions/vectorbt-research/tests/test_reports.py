@@ -473,3 +473,275 @@ def test_write_run_refuses_an_existing_run_folder(tmp_path, monkeypatch, leave_f
     assert sorted(path.name for path in existing.iterdir()) == expected
     if leave_file:
         assert (existing / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+# Plain text fields: only a str is accepted, so null or an integer is rejected.
+_STRICT_TEXT_PATHS = [
+    ("engine",),
+    ("purpose",),
+    ("scenario",),
+    ("code_hash",),
+    ("rule_hash",),
+    ("lock_hash",),
+    ("windows", 0, "utc_status"),
+    ("sources", 0, "path"),
+    ("sources", 0, "sha256"),
+    ("policies", "symbol"),
+    ("policies", "directions", "CALL"),
+    ("policies", "directions", "PUT"),
+    ("policies", "expiry"),
+    ("policies", "tie_rule"),
+    ("policies", "rounding"),
+    ("policies", "cash_rule"),
+    ("policies", "missing_side_rule"),
+    ("policies", "order"),
+    ("completeness", "status"),
+    ("gate", "status"),
+]
+
+# Descriptive fields: any value is allowed except null, which would hide a missing value.
+_NOT_NULL_PATHS = [
+    ("strategy", "source"),
+    ("strategy", "hash"),
+    ("strategy", "parameters"),
+    ("strategy", "seed"),
+    ("utc_proof_references",),
+    ("holdout",),
+    ("quote_provenance",),
+    ("information_availability",),
+    ("selected_prices",),
+    ("gate", "evidence"),
+]
+
+_DICT_GROUP_PATHS = [
+    ("strategy",),
+    ("policies",),
+    ("policies", "directions"),
+    ("quote_diagnostics",),
+    ("counts",),
+    ("completeness",),
+    ("gate",),
+]
+_LIST_PATHS = [("windows",), ("sources",)]
+_LIST_ITEM_PATHS = [("windows", 0), ("sources", 0)]
+
+# Counts must not be negative: the four run counts and the three quote diagnostics.
+_NON_NEGATIVE_COUNT_PATHS = [
+    ("counts", "signals"),
+    ("counts", "contracts"),
+    ("counts", "skipped_signals"),
+    ("counts", "unresolved_contracts"),
+    ("quote_diagnostics", "skipped_rows"),
+    ("quote_diagnostics", "missing_bid"),
+    ("quote_diagnostics", "missing_ask"),
+]
+
+
+def _path_id(path):
+    """Return a test id for a manifest path, such as policies_directions_CALL."""
+    return "_".join(str(key) for key in path)
+
+
+def _field_name(path):
+    """Return a manifest path as read_run names it, such as manifest.windows[0]."""
+    name = "manifest"
+    for key in path:
+        name += f"[{key}]" if isinstance(key, int) else f".{key}"
+    return name
+
+
+def _wrong_container_cases():
+    """Build (path, value) pairs with a wrong container type."""
+    not_a_dict = [None, [], "x", 1]
+    not_a_list = [None, {}, "x", 1]
+    dict_groups = [(path, value) for path in _DICT_GROUP_PATHS for value in not_a_dict]
+    lists = [(path, value) for path in _LIST_PATHS for value in not_a_list]
+    list_items = [(path, value) for path in _LIST_ITEM_PATHS for value in not_a_dict]
+    return [
+        pytest.param(path, value, id=f"{_path_id(path)}-{type(value).__name__}")
+        for path, value in dict_groups + lists + list_items
+    ]
+
+
+@pytest.mark.parametrize("schema_version", [0, 2, -1, 1_000_000])
+def test_run_with_unsupported_schema_version_is_rejected(tmp_path, schema_version):
+    """a schema_version other than 1 is rejected, so a future format is never read as v1"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["schema_version"] = schema_version
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError, match="schema_version"):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["", "Deriv live", "mt5 simulation", "MT5 simulation "],
+    ids=["empty", "other_label", "lowercase", "trailing_space"],
+)
+def test_run_with_wrong_label_is_rejected(tmp_path, label):
+    """a label other than exactly MT5 simulation is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["label"] = label
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError, match="label"):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize("field", ["windows", "sources"])
+def test_run_with_empty_windows_or_sources_is_rejected(tmp_path, field):
+    """an empty windows or sources list is rejected, since the run has no time or source"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest[field] = []
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError, match=field):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize("value", [None, 5], ids=["null", "integer"])
+@pytest.mark.parametrize("path", _STRICT_TEXT_PATHS, ids=_path_id)
+def test_run_with_non_text_value_in_text_field_is_rejected(tmp_path, path, value):
+    """a null or integer in a plain text manifest field is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    parent, key = _parent_and_key(manifest, path)
+    parent[key] = value
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError, match=re.escape(_field_name(path))):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize("path", _NOT_NULL_PATHS, ids=_path_id)
+def test_run_with_null_in_descriptive_field_is_rejected(tmp_path, path):
+    """a null descriptive manifest field is rejected, since null hides a gap"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    parent, key = _parent_and_key(manifest, path)
+    parent[key] = None
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError, match=re.escape(_field_name(path))):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize("path", _NON_NEGATIVE_COUNT_PATHS, ids=_path_id)
+def test_run_with_negative_count_is_rejected(tmp_path, path):
+    """a negative count in the manifest is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    parent, key = _parent_and_key(manifest, path)
+    parent[key] = -1
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError, match=re.escape(_field_name(path))):
+        read_run(run_dir)
+
+
+# counts.signals is the number of signals rows. counts.contracts is the number of contracts
+# rows whose status is not "skipped": the contracts table also holds a row for each skipped signal.
+@pytest.mark.parametrize("value", [0, 2])
+@pytest.mark.parametrize("name", ["signals", "contracts"])
+def test_run_with_count_that_differs_from_saved_rows_is_rejected(tmp_path, name, value):
+    """a count that differs from the row count of its saved Parquet table is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["counts"][name] = value
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError, match=re.escape(_field_name(("counts", name)))):
+        read_run(run_dir)
+
+
+def test_run_with_a_skipped_signal_row_is_read(tmp_path):
+    """a skipped signal has a signals row and a contracts row but is not a contract count"""
+    record = deepcopy(_RECORD)
+    record["signals"].append({**_SIGNAL_ROWS[0], "signal_id": "signal-2"})
+    record["contracts"].append(
+        {
+            **dict.fromkeys(_CONTRACT_ROWS[0], 0),
+            "signal_id": "signal-2",
+            "direction": "CALL",
+            "price_reference": "bid",
+            "status": "skipped",
+            "reason": "five contracts open",
+            "outcome": "",
+        }
+    )
+    record["manifest"]["counts"].update(signals=2, contracts=1, skipped_signals=1)
+    run_dir = write_run(record, tmp_path)
+
+    run = read_run(run_dir)
+    assert len(run["signals"]) == 2
+    assert len(run["contracts"]) == 2
+    assert run["manifest"]["counts"]["contracts"] == 1
+
+
+@pytest.mark.parametrize(("path", "value"), _wrong_container_cases())
+def test_run_with_wrong_container_type_is_rejected(tmp_path, path, value):
+    """a group, list or list item with the wrong container type is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    parent, key = _parent_and_key(manifest, path)
+    parent[key] = value
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError, match=re.escape(_field_name(path))):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize(
+    ("list_name", "break_item"),
+    [
+        pytest.param(
+            "windows",
+            lambda item: item.pop("utc_offset_seconds"),
+            id="windows_1_missing_utc_offset_seconds",
+        ),
+        pytest.param(
+            "sources",
+            lambda item: item.update(price_scale=float(item["price_scale"])),
+            id="sources_1_float_price_scale",
+        ),
+    ],
+)
+def test_run_checks_every_list_item_not_only_the_first(tmp_path, list_name, break_item):
+    """a broken second list item is rejected, not only the first item"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    second_item = deepcopy(manifest[list_name][0])
+    break_item(second_item)
+    manifest[list_name].append(second_item)
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError, match=re.escape("[1]")):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize("content", [None, [1]], ids=["null", "list"])
+def test_run_with_non_object_manifest_is_rejected(tmp_path, content):
+    """a manifest file whose JSON is not an object is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    _save_manifest(run_dir, content)
+
+    with pytest.raises(ValueError, match="manifest must be an object"):
+        read_run(run_dir)
+
+
+def test_run_with_extra_unknown_keys_is_read(tmp_path):
+    """an extra key at top level or in policies is read and kept, not rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["future_note"] = "top-level extra key"
+    manifest["policies"]["future_note"] = "policy extra key"
+    _save_manifest(run_dir, manifest)
+
+    run = read_run(run_dir)
+    assert set(run) == {"manifest", "signals", "contracts", "cash", "summary"}
+    assert run["manifest"]["future_note"] == "top-level extra key"
+    assert run["manifest"]["policies"]["future_note"] == "policy extra key"
