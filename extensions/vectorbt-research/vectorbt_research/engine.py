@@ -3,7 +3,7 @@ Cash and contract ledger for Deriv binary options over a tick stream.
 
 `run_ledger` turns plain ints into plain int arrays and runs one loop over them. The loop keeps
 all state in ints and int arrays and calls only the shared Deriv rules, so it can be compiled
-with Numba later. There are no floats. Prices stay in the input half-cent units: the ledger
+with Numba. There are no floats. Prices stay in the input half-cent units: the ledger
 compares them and copies them, and never converts them.
 
 Per timestamp group the loop does four things in this order: it consumes every tick of the
@@ -32,6 +32,8 @@ from deriv_mt5.ticks import (
     exit_is_fresh,
     expiry_ns,
 )
+from numba import njit
+from numba.extending import register_jitable
 
 _MAX_OPEN = 5
 _SCENARIO_COLUMNS = {"bid": 2, "mid": 3, "ask": 4}  # column in a tick row
@@ -136,8 +138,6 @@ def _validate_run_options(scenario, starting_cash_cents, window_end_ns, compiled
         raise ValueError("scenario must be bid, mid or ask")
     if type(compiled) is not bool:
         raise TypeError("compiled must be a bool")
-    if compiled:
-        raise NotImplementedError("compiled ledger execution is not implemented yet")
     checked_cents(starting_cash_cents)
     if window_end_ns is not None:
         checked_add(window_end_ns, 0)
@@ -196,6 +196,7 @@ def run_ledger(
         by_start,
         starting_cash_cents,
         window_end_ns,
+        compiled=compiled,
     )
     return _build_result(
         signals,
@@ -217,6 +218,7 @@ def _process_chunk_group(
     starting_cash,
     window_end_ns,
     price_column,
+    compiled=False,
 ):
     rows = [*([previous_row] if previous_row is not None else []), *group_rows]
     table = _tick_table(rows)
@@ -234,6 +236,7 @@ def _process_chunk_group(
         state=state,
         start_index=1 if previous_row is not None else 0,
         finalize=False,
+        compiled=compiled,
     )
 
 
@@ -277,6 +280,7 @@ def run_ledger_chunks(
                     starting_cash_cents,
                     window_end_ns,
                     price_column,
+                    compiled=compiled,
                 )
                 state.previous_row = state.tail_group[-1]
                 state.tail_group.clear()
@@ -295,6 +299,7 @@ def run_ledger_chunks(
             starting_cash_cents,
             window_end_ns,
             price_column,
+            compiled=compiled,
         )
         state.previous_row = state.tail_group[-1]
         state.tail_group.clear()
@@ -312,6 +317,7 @@ def run_ledger_chunks(
         window_end_ns,
         state=state,
         finalize=True,
+        compiled=compiled,
     )
     return _build_result(
         signals,
@@ -404,7 +410,14 @@ def _settle(
     Return the cash row count, the available cash and the locked cash after the change.
     """
     expiry = int(contracts[index, _EXPIRY_NS])
-    if exit_tick < 0 or not exit_is_fresh(int(timestamps[exit_tick]), expiry):
+    if exit_tick < 0:
+        contracts[index, _STATUS] = _UNRESOLVED
+        contracts[index, _REASON] = _STALE_EXIT
+        return cash_rows, available, locked
+    exit_ns = int(timestamps[exit_tick])
+    if (exit_ns < 0 and expiry > (2**63 - 1) + exit_ns) or not exit_is_fresh(
+        exit_ns, expiry
+    ):
         contracts[index, _STATUS] = _UNRESOLVED
         contracts[index, _REASON] = _STALE_EXIT
         return cash_rows, available, locked
@@ -436,7 +449,7 @@ def _settle(
     return cash_rows + 1, new_available, new_locked
 
 
-def _run_core(
+def _run_core_loop(
     timestamps,
     ordinals,
     prices,
@@ -444,35 +457,25 @@ def _run_core(
     availabilities,
     is_call,
     by_start,
-    starting_cash,
+    contracts,
+    cash_log,
+    pending,
+    slots,
+    n_pending,
+    n_slots,
+    next_start,
+    available,
+    locked,
+    cash_rows,
+    ended_open,
+    has_window_end,
     window_end_ns,
-    *,
-    state=None,
-    start_index=0,
-    finalize=True,
+    start_index,
+    finalize,
 ):
-    """
-    Process complete timestamp groups through the shared ledger state machine.
-
-    Chunk callers may provide the previous group row before the first group and set the starting
-    index to 1. Whole-array runs use the full arrays and start at index 0.
-    """
+    """Process complete timestamp groups using arrays and scalar state only."""
     n_ticks = timestamps.shape[0]
     n_signals = starts.shape[0]
-    if state is None:
-        state = _new_core_state(n_signals, starting_cash)
-
-    contracts = state.contracts
-    cash_log = state.cash_log
-    pending = state.pending
-    slots = state.slots
-    n_pending = state.n_pending
-    n_slots = state.n_slots
-    next_start = state.next_start
-    available = state.available
-    locked = state.locked
-    cash_rows = state.cash_rows
-
     group_start = start_index
     while group_start < n_ticks:
         group_ns = timestamps[group_start]
@@ -486,7 +489,7 @@ def _run_core(
         kept = 0
         for position in range(n_slots):
             index = slots[position]
-            expiry = int(contracts[index, _EXPIRY_NS])
+            expiry = contracts[index, _EXPIRY_NS]
             if contracts[index, _STATUS] != _OPEN or expiry > group_ns:
                 slots[kept] = index
                 kept += 1
@@ -525,7 +528,7 @@ def _run_core(
         kept = 0
         for position in range(n_pending):
             index = pending[position]
-            if window_end_ns is not None and starts[index] >= window_end_ns:
+            if has_window_end and starts[index] >= window_end_ns:
                 _skip(contracts, index, _WINDOW_END)
                 continue
             expiry = expiry_ns(int(starts[index]))
@@ -538,7 +541,7 @@ def _run_core(
                 int(availabilities[index]),
             )
             if entry_tick < 0:
-                if window_end_ns is not None and group_ns >= window_end_ns:
+                if has_window_end and group_ns >= window_end_ns:
                     _skip(contracts, index, _WINDOW_END)
                 elif group_ns > expiry:
                     _skip(contracts, index, _ENTRY_LATE)
@@ -546,7 +549,7 @@ def _run_core(
                     pending[kept] = index
                     kept += 1
                 continue
-            if window_end_ns is not None and timestamps[entry_tick] >= window_end_ns:
+            if has_window_end and timestamps[entry_tick] >= window_end_ns:
                 _skip(contracts, index, _WINDOW_END)
                 continue
             if n_slots >= _MAX_OPEN:
@@ -587,7 +590,7 @@ def _run_core(
         kept = 0
         for position in range(n_slots):
             index = slots[position]
-            expiry = int(contracts[index, _EXPIRY_NS])
+            expiry = contracts[index, _EXPIRY_NS]
             if contracts[index, _STATUS] == _OPEN and expiry <= group_ns:
                 exit_tick = exit_index_in_range(
                     timestamps, exit_begin, group_end, expiry
@@ -610,15 +613,7 @@ def _run_core(
             slots[kept] = index
             kept += 1
         n_slots = kept
-
         group_start = group_end
-
-    state.n_pending = n_pending
-    state.n_slots = n_slots
-    state.next_start = next_start
-    state.available = available
-    state.locked = locked
-    state.cash_rows = cash_rows
 
     if finalize:
         ended_open = 0
@@ -630,11 +625,75 @@ def _run_core(
             elif contracts[index, _STATUS] == _WAITING:
                 reason = (
                     _WINDOW_END
-                    if window_end_ns is not None and starts[index] >= window_end_ns
+                    if has_window_end and starts[index] >= window_end_ns
                     else _NO_ENTRY_DATA
                 )
                 _skip(contracts, index, reason)
-        state.ended_open = ended_open
+    return (
+        n_pending,
+        n_slots,
+        next_start,
+        available,
+        locked,
+        cash_rows,
+        ended_open,
+    )
+
+
+def _run_core(
+    timestamps,
+    ordinals,
+    prices,
+    starts,
+    availabilities,
+    is_call,
+    by_start,
+    starting_cash,
+    window_end_ns,
+    *,
+    state=None,
+    start_index=0,
+    finalize=True,
+    compiled=False,
+):
+    """Run the shared ledger loop with Python or Numba execution."""
+    if state is None:
+        state = _new_core_state(starts.shape[0], starting_cash)
+    has_window_end = window_end_ns is not None
+    end_value = window_end_ns if has_window_end else 0
+    core = _compiled_core_loop if compiled else _run_core_loop
+    (
+        state.n_pending,
+        state.n_slots,
+        state.next_start,
+        state.available,
+        state.locked,
+        state.cash_rows,
+        state.ended_open,
+    ) = core(
+        timestamps,
+        ordinals,
+        prices,
+        starts,
+        availabilities,
+        is_call,
+        by_start,
+        state.contracts,
+        state.cash_log,
+        state.pending,
+        state.slots,
+        state.n_pending,
+        state.n_slots,
+        state.next_start,
+        state.available,
+        state.locked,
+        state.cash_rows,
+        state.ended_open,
+        has_window_end,
+        end_value,
+        start_index,
+        finalize,
+    )
     return state
 
 
@@ -693,3 +752,24 @@ def _build_result(
             f"data ended with {ended_open} contract(s) still open" if ended_open else ""
         ),
     )
+
+
+# Register original shared rules and selectors as Numba-jitable; the Deriv package stays stdlib-only.
+for _jitable in (
+    checked_cents,
+    checked_add,
+    stake_cents,
+    gross_credit_cents,
+    is_win,
+    expiry_ns,
+    entry_index_in_range,
+    exit_index_in_range,
+    exit_is_fresh,
+    _write_cash,
+    _skip,
+    _settle,
+    _run_core_loop,
+):
+    register_jitable(_jitable)
+
+_compiled_core_loop = njit(fastmath=False)(_run_core_loop)
