@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from vectorbt_research import engine
 
 _T0 = 1_787_023_200_000_000_000
@@ -98,7 +99,8 @@ def test_chunk_splits_at_every_position_match_one_run_including_same_time_group(
         assert actual == expected, f"split at {split}"
 
 
-def test_chunk_processing_does_not_buffer_the_full_tick_history(monkeypatch):
+@pytest.mark.parametrize("compiled", [False, True])
+def test_chunk_processing_does_not_buffer_the_full_tick_history(monkeypatch, compiled):
     credits = []
     gross_credit_cents = engine.gross_credit_cents
 
@@ -107,7 +109,20 @@ def test_chunk_processing_does_not_buffer_the_full_tick_history(monkeypatch):
         credits.append(credit)
         return credit
 
-    monkeypatch.setattr(engine, "gross_credit_cents", record_credit)
+    processed_cash_rows = []
+    if compiled:
+        run_core = engine._run_core
+
+        def observe_core(*args, **kwargs):
+            before_rows = kwargs["state"].cash_rows
+            state = run_core(*args, **kwargs)
+            if kwargs.get("compiled") and state.cash_rows > before_rows:
+                processed_cash_rows.append(state.cash_rows)
+            return state
+
+        monkeypatch.setattr(engine, "_run_core", observe_core)
+    else:
+        monkeypatch.setattr(engine, "gross_credit_cents", record_credit)
 
     def chunks():
         yield [_tick(1, 1)]
@@ -115,9 +130,14 @@ def test_chunk_processing_does_not_buffer_the_full_tick_history(monkeypatch):
         # The next timestamp completes the expiry group, so settlement must occur
         # before the consumer requests another chunk. No allocator threshold is needed.
         yield [_tick(61, 3, 20_100)]
-        assert credits == [976], (
-            "tick history was buffered instead of settling incrementally"
-        )
+        if compiled:
+            assert processed_cash_rows == [2, 3], (
+                "compiled ticks were buffered instead of settling incrementally"
+            )
+        else:
+            assert credits == [976], (
+                "tick history was buffered instead of settling incrementally"
+            )
         yield [_tick(62, 4, 20_100)]
 
     result = engine.run_ledger_chunks(
@@ -125,7 +145,7 @@ def test_chunk_processing_does_not_buffer_the_full_tick_history(monkeypatch):
         [_signal()],
         scenario="bid",
         starting_cash_cents=1_000_000,
-        compiled=False,
+        compiled=compiled,
     )
 
     assert result.contracts[0]["status"] == "settled"
@@ -134,7 +154,10 @@ def test_chunk_processing_does_not_buffer_the_full_tick_history(monkeypatch):
         "entry",
         "settlement",
     ]
-    assert credits == [976]
+    if compiled:
+        assert processed_cash_rows == [2, 3]
+    else:
+        assert credits == [976]
 
 
 def test_short_window_without_fresh_expiry_tick_keeps_stake_locked():
