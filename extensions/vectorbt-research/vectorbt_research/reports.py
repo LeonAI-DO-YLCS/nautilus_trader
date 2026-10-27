@@ -56,6 +56,73 @@ _SCHEMAS = {
 }
 
 
+# Shape of a saved manifest. A dict lists the required keys of a group. A one-item list
+# is the shape of every item in a list. int means an exact JSON integer, so floats and
+# bools are rejected. object means the key only has to be present.
+_MANIFEST_SHAPE = {
+    "schema_version": int,
+    "label": object,
+    "engine": object,
+    "purpose": object,
+    "code_hash": object,
+    "rule_hash": object,
+    "lock_hash": object,
+    "strategy": {
+        "source": object,
+        "hash": object,
+        "parameters": object,
+        "seed": object,
+    },
+    "scenario": object,
+    "windows": [
+        {
+            "start_timestamp_ns": int,
+            "end_timestamp_ns": int,
+            "utc_status": object,
+            "utc_offset_seconds": int,
+        }
+    ],
+    "utc_proof_references": object,
+    "holdout": object,
+    "sources": [
+        {
+            "path": object,
+            "sha256": object,
+            "first_row": int,
+            "last_row": int,
+            "price_scale": int,
+        }
+    ],
+    "quote_provenance": object,
+    "policies": {
+        "symbol": object,
+        "directions": {"CALL": object, "PUT": object},
+        "expiry": object,
+        "net_payout_basis_points": int,
+        "tie_rule": object,
+        "rounding": object,
+        "minimum_stake_cents": int,
+        "stake_basis_points_of_available_cash": int,
+        "cash_rule": object,
+        "max_open_contracts": int,
+        "stale_limit_seconds": int,
+        "missing_side_rule": object,
+        "order": object,
+    },
+    "information_availability": object,
+    "selected_prices": object,
+    "quote_diagnostics": {"skipped_rows": int, "missing_bid": int, "missing_ask": int},
+    "counts": {
+        "signals": int,
+        "contracts": int,
+        "skipped_signals": int,
+        "unresolved_contracts": int,
+    },
+    "completeness": {"status": object},
+    "gate": {"status": object, "evidence": object},
+}
+
+
 def write_run(record: Mapping[str, Any], output_dir: str | Path) -> Path:
     """
     Write a run to a new child folder of output_dir and return that folder.
@@ -92,16 +159,41 @@ def write_run(record: Mapping[str, Any], output_dir: str | Path) -> Path:
 def read_run(path: str | Path) -> dict[str, Any]:
     """
     Read a saved run folder: manifest dict, three pandas DataFrames and summary text.
+
+    Raise ValueError when the manifest lacks a required field or holds a non-integer
+    where an integer is required. A missing file still raises FileNotFoundError.
     """
     run_dir = Path(path)
     run: dict[str, Any] = {}
     run["manifest"] = json.loads(
         (run_dir / "manifest.json").read_text(encoding="utf-8")
     )
+    _check_manifest(run["manifest"], _MANIFEST_SHAPE, "manifest")
     for name in _SCHEMAS:
         run[name] = pq.read_table(run_dir / f"{name}.parquet").to_pandas()
     run["summary"] = (run_dir / "summary.txt").read_text(encoding="utf-8")
     return run
+
+
+def _check_manifest(value: Any, shape: Any, path: str) -> None:
+    """
+    Raise ValueError unless value matches shape. The message names the field at fault.
+    """
+    if isinstance(shape, dict):
+        if type(value) is not dict:
+            raise ValueError(f"{path} must be an object, got {type(value).__name__}")
+        for key, child_shape in shape.items():
+            child_path = f"{path}.{key}"
+            if key not in value:
+                raise ValueError(f"missing required field {child_path}")
+            _check_manifest(value[key], child_shape, child_path)
+    elif isinstance(shape, list):
+        if type(value) is not list:
+            raise ValueError(f"{path} must be a list, got {type(value).__name__}")
+        for index, item in enumerate(value):
+            _check_manifest(item, shape[0], f"{path}[{index}]")
+    elif shape is int and type(value) is not int:
+        raise ValueError(f"{path} must be an integer, got {type(value).__name__}")
 
 
 def _table(rows: Sequence[Mapping[str, Any]], schema: pa.Schema) -> pa.Table:
