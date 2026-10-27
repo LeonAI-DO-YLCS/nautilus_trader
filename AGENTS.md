@@ -119,6 +119,8 @@ and take precedence over the generic contributor guidance above where they diffe
 
 - Efficiency, speed, robustness and accuracy come first. Use the native, fastest exact data paths
   (Parquet catalog, Arrow wranglers, streaming backtests).
+- Run every test suite, backtest and optimization on 80% of all CPU cores (owner, 2026-10-27),
+  for example 25 workers on 32 cores, so it runs as fast as the computer allows.
 - Run a prior-art check before building anything; do not rebuild what already exists in this
   repository or in the owner's other projects. Test, validate and verify every step.
 - Before building, check what the system accepts and how (formats, loaders, fastest exact path),
