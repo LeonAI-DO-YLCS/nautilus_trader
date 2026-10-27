@@ -159,8 +159,8 @@ and take precedence over the generic contributor guidance above where they diffe
   Claude Sonnet 5.5 at xhigh do the work. GPT 6.1 Sol at high (Codex) supervises, reviews and
   evaluates all work. The main session is the manager and coordinator; it plans, assigns and
   checks, and does not do the tasks itself.
-- When the Codex quota is above about 85%, Claude Sonnet 5.5 at xhigh takes Sol's review role until
-  the quota resets, and the coordinator tells the owner each time. Never switch models silently
+- Claude Sonnet 5.5 at xhigh takes Sol's review role only when the Codex quota is used up (out of
+  quota), until the reset, and the coordinator tells the owner each time. Never switch models silently
   (owner, 2026-10-26).
 - Up to 6 agents may run at once in this fork (owner approval, 2026-10-26). Keep at least 3 busy on
   tasks that do not overlap.
@@ -175,7 +175,7 @@ and take precedence over the generic contributor guidance above where they diffe
   management time, and shows every time as agent time (human time), for example
   `1 h agent time (≈ 2 days human time)` (owner, 2026-10-26).
 - Owner requests in this project are rules. The full list, with where each became a rule, is in
-  `.artifacts/rules/owner-requests-2026-10-26.md` (local, git-ignored).
+  `.agents/owner-requests-2026-10-26.md` (tracked in git).
 - Rules 6 (short HTML cards), 10 (Sol high supervises) and 15 (two-fail takeover) are also global
   now (owner, 2026-10-26).
 
