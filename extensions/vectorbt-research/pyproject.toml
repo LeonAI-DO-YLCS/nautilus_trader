@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Local vectorbt research environment for Deriv binary backtests"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "pyarrow>=26.0.0",
     "vectorbt==1.2.0",
 ]
 
