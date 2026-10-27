@@ -89,9 +89,14 @@ def run_story_1_window(
     scenario: str,
     output_dir: str | Path,
     starting_cash_cents: int = 1_000_000,
+    purpose: str = "story 1 end-to-end run",
+    strategy: Mapping[str, object] | None = None,
 ) -> Path:
     """
     Run one scenario (bid, mid or ask) on a real quote window and return the saved folder.
+
+    A strategy run passes its `purpose` and its `strategy` record (source, hash,
+    parameters, seed) for the manifest; hand-written signals leave the defaults.
 
     The window is [window_start_ns, window_end_ns) in UTC nanoseconds and must lie in one
     yearly file of the dataset folder. It is cross-checked against the exporter CSV first,
@@ -157,6 +162,8 @@ def run_story_1_window(
             "continuation_rows": len(quote_rows) - window_rows,
             "continuation_end_timestamp_ns": read_end_ns,
         },
+        purpose=purpose,
+        strategy=strategy,
     )
 
 
@@ -171,10 +178,13 @@ def _run(
     window: tuple[int, int] | None = None,
     source: dict[str, object] | None = None,
     provenance: dict[str, object] | None = None,
+    purpose: str = "story 1 end-to-end run",
+    strategy: Mapping[str, object] | None = None,
 ) -> Path:
     """
     Run the shared pipeline and save the run. Real data passes `window`, `source` and
-    `provenance`; quote rows given by the caller leave them None.
+    `provenance`; quote rows given by the caller leave them None. A strategy run passes
+    `purpose` and `strategy` for the manifest.
     """
     quotes, diagnostics = parse_quote_rows(quote_rows)
     signals = _signal_records(frozen_signals)
@@ -194,6 +204,8 @@ def _run(
             window=window,
             source=source,
             provenance=provenance,
+            purpose=purpose,
+            strategy=strategy,
         ),
         "signals": [
             {
@@ -311,6 +323,8 @@ def _manifest(
     window: tuple[int, int] | None = None,
     source: dict[str, object] | None = None,
     provenance: dict[str, object] | None = None,
+    purpose: str = "story 1 end-to-end run",
+    strategy: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """
     Build the run manifest. `spot_scale` 200 means the saved spots are price x 200.
@@ -340,13 +354,15 @@ def _manifest(
         "schema_version": 1,
         "label": "MT5 simulation",
         "engine": "vectorbt_research",
-        "purpose": "story 1 end-to-end run",
+        "purpose": purpose,
         "code_hash": _digest(sorted(Path(__file__).parent.glob("*.py"))),
         "rule_hash": _digest(
             [Path(deriv_mt5.rules.__file__), Path(deriv_mt5.ticks.__file__)]
         ),
         "lock_hash": _digest([_PROJECT_DIR / "uv.lock"]),
-        "strategy": {
+        "strategy": dict(strategy)
+        if strategy is not None
+        else {
             "source": _NOT_APPLICABLE,
             "hash": _NOT_APPLICABLE,
             "parameters": _NOT_APPLICABLE,
