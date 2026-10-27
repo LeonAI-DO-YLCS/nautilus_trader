@@ -34,6 +34,7 @@ Engine API these tests set (the runner reuses it; R-13 to R-16 add `window_end_n
   these tests only require a nonempty `reason` string.
 """
 
+import pytest
 from vectorbt_research.engine import run_ledger
 
 _T0 = 1_787_023_200_000_000_000  # 2026-08-18 03:20:00 UTC (S8 window start)
@@ -126,7 +127,8 @@ def _assert_ledger(result, *, contracts, cash, label=""):
     assert result.incomplete is False
 
 
-def test_the_compiled_loop_debits_and_credits_each_contract_once():
+@pytest.mark.parametrize("compiled", [True, False], ids=["compiled", "python"])
+def test_the_compiled_loop_debits_and_credits_each_contract_once(compiled):
     """the compiled loop debits and credits each contract once"""
     # C1: 1000000 free -> 5.00 stake -> 999500 free / 500 locked -> win 976 gross.
     # Ticks after expiry (ordinals 4 to 6) must add no second debit or credit.
@@ -148,7 +150,11 @@ def test_the_compiled_loop_debits_and_credits_each_contract_once():
         signals = [_signal("signal-1", "CALL", 0, 1)]
 
         result = run_ledger(
-            ticks, signals, scenario="bid", starting_cash_cents=1_000_000
+            ticks,
+            signals,
+            scenario="bid",
+            starting_cash_cents=1_000_000,
+            compiled=compiled,
         )
 
         _assert_ledger(
