@@ -153,6 +153,38 @@ and take precedence over the generic contributor guidance above where they diffe
   that job and does it itself. Get the failing agent's report first, then follow every other rule
   here (branch or worktree, tests, no merge into `develop` without the owner).
 
+### Agents and models
+
+- Agent models for this fork (owner, 2026-10-26): Claude Haiku 5.5 at max, GPT 6 Luna at xhigh and
+  Claude Sonnet 5.5 at xhigh do the work. GPT 6.1 Sol at high (Codex) supervises, reviews and
+  evaluates all work. The main session is the manager and coordinator; it plans, assigns and
+  checks, and does not do the tasks itself.
+- When the Codex quota is above about 85%, Claude Sonnet 5.5 at xhigh takes Sol's review role until
+  the quota resets, and the coordinator tells the owner each time. Never switch models silently
+  (owner, 2026-10-26).
+- Up to 6 agents may run at once in this fork (owner approval, 2026-10-26). Keep at least 3 busy on
+  tasks that do not overlap.
+
+### Talking to the owner
+
+- Give every open question or reminder its own short context each time it appears: what the thing
+  is in plain words, what happened, what each option changes, and an example. Give each option its
+  pros and cons, and a recommendation with the reason.
+- Replies to the owner are short, structured HTML cards (owner, 2026-10-26).
+- Every update recalibrates the time left from measured agent runs plus the coordinator's own
+  management time, and shows every time as agent time (human time), for example
+  `1 h agent time (≈ 2 days human time)` (owner, 2026-10-26).
+
+### Memory and retrieval
+
+- Every agent uses Engram, CodeGraph and zvec-grep on every task: search before work, save every
+  outcome to Engram after work (always `--project nautilus-trader`), and keep the indexes current
+  with each change.
+- Run the three tools on Windows only, in `C:\LeonAI-DO\dev\TRADING\nautilus_trader`. Never install,
+  index or run them inside WSL. Their indexes show the branch checked out in the Windows copy;
+  refresh them (`codegraph sync`, `zg index`) after each change reaches that copy.
+- If a tool breaks, reinstall it, but first back up its old index or database. No data loss.
+
 ### Safety
 
 - Never place real-money trades, log in to broker accounts, or read credential files unless the
