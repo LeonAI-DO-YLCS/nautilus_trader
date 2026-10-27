@@ -658,6 +658,131 @@ def test_run_with_count_that_differs_from_saved_rows_is_rejected(tmp_path, name,
         read_run(run_dir)
 
 
+# Every saved column is required evidence: the reader rejects a table that drops a column,
+# adds one, holds a null, or stores a different type (such as float money).
+_TABLE_COLUMNS = [
+    pytest.param(table, column, id=f"{table}.{column}")
+    for table, columns in {
+        "signals": (
+            "signal_id",
+            "direction",
+            "requested_start_timestamp_ns",
+            "available_timestamp_ns",
+        ),
+        "contracts": (
+            "signal_id",
+            "direction",
+            "price_reference",
+            "status",
+            "reason",
+            "outcome",
+            "entry_ordinal",
+            "exit_ordinal",
+            "entry_timestamp_ns",
+            "expiry_timestamp_ns",
+            "exit_timestamp_ns",
+            "entry_spot",
+            "exit_spot",
+            "stake_cents",
+            "gross_credit_cents",
+            "net_cents",
+        ),
+        "cash": (
+            "event",
+            "signal_id",
+            "before_available_cents",
+            "before_locked_cents",
+            "available_cents",
+            "locked_cents",
+        ),
+    }.items()
+    for column in columns
+]
+
+
+def _rewrite_table(run_dir, name, change):
+    path = run_dir / f"{name}.parquet"
+    pq.write_table(change(pq.read_table(path)), path)
+
+
+@pytest.mark.parametrize(("table", "column"), _TABLE_COLUMNS)
+def test_run_with_a_missing_table_column_is_rejected(tmp_path, table, column):
+    """a saved table that lacks a required column is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    _rewrite_table(run_dir, table, lambda t: t.drop_columns([column]))
+
+    with pytest.raises(ValueError, match=re.escape(f"{table}.{column}")):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize(("table", "column"), _TABLE_COLUMNS)
+def test_run_with_a_null_table_value_is_rejected(tmp_path, table, column):
+    """a saved table with a null in a required column is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+
+    def null_first(t):
+        index = t.schema.get_field_index(column)
+        values = t.column(column).to_pylist()
+        values[0] = None
+        return t.set_column(
+            index, column, pa.array(values, type=t.schema.field(column).type)
+        )
+
+    _rewrite_table(run_dir, table, null_first)
+
+    with pytest.raises(ValueError, match=re.escape(f"{table}.{column}")):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        p
+        for p in _TABLE_COLUMNS
+        if p.values[1].endswith(("_ns", "_cents", "_ordinal", "_spot"))
+    ],
+)
+def test_run_with_fractional_integer_column_is_rejected(tmp_path, table, column):
+    """a saved money, time, ordinal or price column stored as a float is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+
+    def as_fraction(t):
+        index = t.schema.get_field_index(column)
+        values = [value + 0.25 for value in t.column(column).to_pylist()]
+        return t.set_column(index, column, pa.array(values, type=pa.float64()))
+
+    _rewrite_table(run_dir, table, as_fraction)
+
+    with pytest.raises(ValueError, match=re.escape(f"{table}.{column}")):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize("table", ["signals", "contracts", "cash"])
+def test_run_with_an_extra_table_column_is_rejected(tmp_path, table):
+    """a saved table with a column outside the schema is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    _rewrite_table(
+        run_dir,
+        table,
+        lambda t: t.append_column("extra", pa.array(["x"] * t.num_rows)),
+    )
+
+    with pytest.raises(ValueError, match=re.escape(f"{table}.extra")):
+        read_run(run_dir)
+
+
+@pytest.mark.parametrize("name", ["skipped_signals", "unresolved_contracts"])
+def test_run_with_status_count_that_differs_from_saved_rows_is_rejected(tmp_path, name):
+    """a skipped or unresolved count that differs from the saved contract rows is rejected"""
+    run_dir = write_run(deepcopy(_RECORD), tmp_path)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["counts"][name] = 99
+    _save_manifest(run_dir, manifest)
+
+    with pytest.raises(ValueError, match=re.escape(_field_name(("counts", name)))):
+        read_run(run_dir)
+
+
 def test_run_with_a_skipped_signal_row_is_read(tmp_path):
     """a skipped signal has a signals row and a contracts row but is not a contract count"""
     record = deepcopy(_RECORD)
