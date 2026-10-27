@@ -168,7 +168,8 @@ def read_run(path: str | Path) -> dict[str, Any]:
     Read a saved run folder: manifest dict, three pandas DataFrames and summary text.
 
     Raise ValueError when the manifest has a missing, null, wrongly typed or out-of-range
-    field, or when a count differs from the rows saved for it. A missing file still raises
+    field, when a table lacks a column, adds one, holds a null or stores another type, or
+    when a count differs from the rows saved for it. A missing file still raises
     FileNotFoundError.
     """
     run_dir = Path(path)
@@ -177,8 +178,10 @@ def read_run(path: str | Path) -> dict[str, Any]:
         (run_dir / "manifest.json").read_text(encoding="utf-8")
     )
     _check_manifest(run["manifest"], _MANIFEST_SHAPE, "manifest")
-    for name in _SCHEMAS:
-        run[name] = pq.read_table(run_dir / f"{name}.parquet").to_pandas()
+    for name, schema in _SCHEMAS.items():
+        table = pq.read_table(run_dir / f"{name}.parquet")
+        _check_table(name, table, schema)
+        run[name] = table.to_pandas()
     _check_counts(run)
     run["summary"] = (run_dir / "summary.txt").read_text(encoding="utf-8")
     return run
@@ -203,6 +206,39 @@ def _check_counts(run: dict[str, Any]) -> None:
         raise ValueError(
             f"manifest.counts.contracts is {counts['contracts']}, but contracts.parquet "
             f"has {opened_rows} rows that are not skipped"
+        )
+    for field, status in (
+        ("skipped_signals", "skipped"),
+        ("unresolved_contracts", "unresolved"),
+    ):
+        status_rows = int((run["contracts"]["status"] == status).sum())
+        if counts[field] != status_rows:
+            raise ValueError(
+                f"manifest.counts.{field} is {counts[field]}, but contracts.parquet "
+                f"has {status_rows} {status} rows"
+            )
+
+
+def _check_table(name: str, table: pa.Table, schema: pa.Schema) -> None:
+    """
+    Raise ValueError unless the table has exactly the schema's columns, types and no nulls.
+
+    The message names the table and column at fault, such as contracts.stake_cents.
+    """
+    for column in table.schema.names:
+        if column not in schema.names:
+            raise ValueError(f"unexpected column {name}.{column}")
+    for field in schema:
+        if field.name not in table.schema.names:
+            raise ValueError(f"missing required column {name}.{field.name}")
+        actual = table.schema.field(field.name).type
+        if actual != field.type:
+            raise ValueError(f"{name}.{field.name} must be {field.type}, got {actual}")
+        if table.column(field.name).null_count:
+            raise ValueError(f"{name}.{field.name} must not hold nulls")
+    if table.schema.names != schema.names:
+        raise ValueError(
+            f"{name} columns must be in the order {schema.names}, got {table.schema.names}"
         )
 
 
