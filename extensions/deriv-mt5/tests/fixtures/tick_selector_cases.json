@@ -1,0 +1,463 @@
+{
+ "contract_start_ns": 1000000000000,
+ "expiry_ns": 1060000000000,
+ "entry": [
+  {
+   "name": "same-time rows at entry: first row in source order",
+   "timestamps": [
+    999000000000,
+    1002000000000,
+    1002000000000,
+    1002000000000
+   ],
+   "ordinals": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "begin": 0,
+   "end": 4,
+   "start_ns": 1000000000000,
+   "availability": 0,
+   "expected": 1
+  },
+  {
+   "name": "availability after the whole same-time group: no entry yet",
+   "timestamps": [
+    1002000000000,
+    1002000000000,
+    1002000000000
+   ],
+   "ordinals": [
+    5,
+    6,
+    7
+   ],
+   "begin": 0,
+   "end": 3,
+   "start_ns": 1000000000000,
+   "availability": 8,
+   "expected": -1
+  },
+  {
+   "name": "availability inside a same-time group: first row that is available",
+   "timestamps": [
+    1002000000000,
+    1002000000000,
+    1002000000000
+   ],
+   "ordinals": [
+    5,
+    6,
+    7
+   ],
+   "begin": 0,
+   "end": 3,
+   "start_ns": 1000000000000,
+   "availability": 7,
+   "expected": 2
+  },
+  {
+   "name": "availability equals the middle ordinal",
+   "timestamps": [
+    1002000000000,
+    1002000000000,
+    1002000000000
+   ],
+   "ordinals": [
+    5,
+    6,
+    7
+   ],
+   "begin": 0,
+   "end": 3,
+   "start_ns": 1000000000000,
+   "availability": 6,
+   "expected": 1
+  },
+  {
+   "name": "availability equals the first ordinal",
+   "timestamps": [
+    1002000000000,
+    1002000000000,
+    1002000000000
+   ],
+   "ordinals": [
+    5,
+    6,
+    7
+   ],
+   "begin": 0,
+   "end": 3,
+   "start_ns": 1000000000000,
+   "availability": 5,
+   "expected": 0
+  },
+  {
+   "name": "entry exactly at the start",
+   "timestamps": [
+    999999999999,
+    1000000000000
+   ],
+   "ordinals": [
+    1,
+    2
+   ],
+   "begin": 0,
+   "end": 2,
+   "start_ns": 1000000000000,
+   "availability": 0,
+   "expected": 1
+  },
+  {
+   "name": "entry exactly at expiry",
+   "timestamps": [
+    1060000000000
+   ],
+   "ordinals": [
+    1
+   ],
+   "begin": 0,
+   "end": 1,
+   "start_ns": 1000000000000,
+   "availability": 0,
+   "expected": 0
+  },
+  {
+   "name": "entry 1 ns after expiry: no trade",
+   "timestamps": [
+    1060000000001
+   ],
+   "ordinals": [
+    1
+   ],
+   "begin": 0,
+   "end": 1,
+   "start_ns": 1000000000000,
+   "availability": 0,
+   "expected": -1
+  },
+  {
+   "name": "delayed entry past expiry: availability waits beyond the expiry time",
+   "timestamps": [
+    1010000000000,
+    1070000000000
+   ],
+   "ordinals": [
+    1,
+    9
+   ],
+   "begin": 0,
+   "end": 2,
+   "start_ns": 1000000000000,
+   "availability": 5,
+   "expected": -1
+  },
+  {
+   "name": "delayed entry still inside expiry",
+   "timestamps": [
+    1010000000000,
+    1030000000000
+   ],
+   "ordinals": [
+    1,
+    5
+   ],
+   "begin": 0,
+   "end": 2,
+   "start_ns": 1000000000000,
+   "availability": 5,
+   "expected": 1
+  },
+  {
+   "name": "no eligible row: all rows before the start",
+   "timestamps": [
+    998000000000,
+    999000000000
+   ],
+   "ordinals": [
+    1,
+    2
+   ],
+   "begin": 0,
+   "end": 2,
+   "start_ns": 1000000000000,
+   "availability": 0,
+   "expected": -1
+  },
+  {
+   "name": "no eligible row: availability above every ordinal",
+   "timestamps": [
+    1001000000000,
+    1002000000000
+   ],
+   "ordinals": [
+    1,
+    2
+   ],
+   "begin": 0,
+   "end": 2,
+   "start_ns": 1000000000000,
+   "availability": 3,
+   "expected": -1
+  },
+  {
+   "name": "empty range at the start",
+   "timestamps": [
+    1002000000000
+   ],
+   "ordinals": [
+    1
+   ],
+   "begin": 0,
+   "end": 0,
+   "start_ns": 1000000000000,
+   "availability": 0,
+   "expected": -1
+  },
+  {
+   "name": "empty range at the end",
+   "timestamps": [
+    1002000000000
+   ],
+   "ordinals": [
+    1
+   ],
+   "begin": 1,
+   "end": 1,
+   "start_ns": 1000000000000,
+   "availability": 0,
+   "expected": -1
+  },
+  {
+   "name": "range begin skips an earlier matching row",
+   "timestamps": [
+    1001000000000,
+    1002000000000,
+    1003000000000
+   ],
+   "ordinals": [
+    1,
+    2,
+    3
+   ],
+   "begin": 2,
+   "end": 3,
+   "start_ns": 1000000000000,
+   "availability": 0,
+   "expected": 2
+  },
+  {
+   "name": "range end is exclusive",
+   "timestamps": [
+    1001000000000,
+    1002000000000
+   ],
+   "ordinals": [
+    1,
+    2
+   ],
+   "begin": 0,
+   "end": 1,
+   "start_ns": 1000000000000,
+   "availability": 2,
+   "expected": -1
+  },
+  {
+   "name": "negative ordinal at its availability",
+   "timestamps": [
+    1000000000000
+   ],
+   "ordinals": [
+    -5
+   ],
+   "begin": 0,
+   "end": 1,
+   "start_ns": 1000000000000,
+   "availability": -5,
+   "expected": 0
+  },
+  {
+   "name": "negative ordinal below its availability",
+   "timestamps": [
+    1000000000000
+   ],
+   "ordinals": [
+    -5
+   ],
+   "begin": 0,
+   "end": 1,
+   "start_ns": 1000000000000,
+   "availability": -4,
+   "expected": -1
+  },
+  {
+   "name": "entry exactly at expiry when expiry is the largest int64",
+   "timestamps": [
+    9223372036854775807
+   ],
+   "ordinals": [
+    1
+   ],
+   "begin": 0,
+   "end": 1,
+   "start_ns": 9223371976854775807,
+   "availability": 0,
+   "expected": 0
+  }
+ ],
+ "exit": [
+  {
+   "name": "same-time rows at expiry: last row in source order",
+   "timestamps": [
+    1060000000000,
+    1060000000000,
+    1060000000000
+   ],
+   "begin": 0,
+   "end": 3,
+   "expiry_ns": 1060000000000,
+   "expected": 2
+  },
+  {
+   "name": "between-group expiry: last row before the gap",
+   "timestamps": [
+    1050000000000,
+    1070000000000
+   ],
+   "begin": 0,
+   "end": 2,
+   "expiry_ns": 1060000000000,
+   "expected": 0
+  },
+  {
+   "name": "exit exactly at expiry",
+   "timestamps": [
+    1059999999999,
+    1060000000000,
+    1060000000001
+   ],
+   "begin": 0,
+   "end": 3,
+   "expiry_ns": 1060000000000,
+   "expected": 1
+  },
+  {
+   "name": "only a row 1 ns after expiry: no exit",
+   "timestamps": [
+    1060000000001
+   ],
+   "begin": 0,
+   "end": 1,
+   "expiry_ns": 1060000000000,
+   "expected": -1
+  },
+  {
+   "name": "every row after expiry: no exit",
+   "timestamps": [
+    1065000000000,
+    1066000000000
+   ],
+   "begin": 0,
+   "end": 2,
+   "expiry_ns": 1060000000000,
+   "expected": -1
+  },
+  {
+   "name": "empty range",
+   "timestamps": [
+    1060000000000
+   ],
+   "begin": 0,
+   "end": 0,
+   "expiry_ns": 1060000000000,
+   "expected": -1
+  },
+  {
+   "name": "range end is exclusive",
+   "timestamps": [
+    1059999999997,
+    1059999999998,
+    1059999999999
+   ],
+   "begin": 0,
+   "end": 2,
+   "expiry_ns": 1060000000000,
+   "expected": 1
+  },
+  {
+   "name": "range begin skips earlier rows",
+   "timestamps": [
+    1059999999997,
+    1059999999998,
+    1059999999999
+   ],
+   "begin": 1,
+   "end": 3,
+   "expiry_ns": 1060000000000,
+   "expected": 2
+  },
+  {
+   "name": "rows after the first late row are not used",
+   "timestamps": [
+    1059999999999,
+    1060000000001,
+    1060000000002
+   ],
+   "begin": 0,
+   "end": 3,
+   "expiry_ns": 1060000000000,
+   "expected": 0
+  },
+  {
+   "name": "range holds only rows after expiry",
+   "timestamps": [
+    1059999999999,
+    1060000000001,
+    1060000000002
+   ],
+   "begin": 1,
+   "end": 3,
+   "expiry_ns": 1060000000000,
+   "expected": -1
+  }
+ ],
+ "freshness": [
+  {
+   "name": "exit exactly at expiry is fresh",
+   "timestamps": [
+    1060000000000
+   ],
+   "expiry_ns": 1060000000000,
+   "expected_index": 0,
+   "fresh": true
+  },
+  {
+   "name": "exit 10 s before expiry is fresh",
+   "timestamps": [
+    1050000000000
+   ],
+   "expiry_ns": 1060000000000,
+   "expected_index": 0,
+   "fresh": true
+  },
+  {
+   "name": "exit 10 s + 1 ns before expiry is stale",
+   "timestamps": [
+    1049999999999
+   ],
+   "expiry_ns": 1060000000000,
+   "expected_index": 0,
+   "fresh": false
+  }
+ ],
+ "overflow": {
+  "int64_max": 9223372036854775807,
+  "last_start_that_fits": 9223371976854775807,
+  "last_expiry_that_fits": 9223372036854775807,
+  "first_start_that_overflows": 9223371976854775808,
+  "int64_min": -9223372036854775808,
+  "expiry_of_int64_min": -9223371976854775808
+ }
+}
