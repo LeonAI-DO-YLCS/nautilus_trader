@@ -57,24 +57,11 @@ standard for correctness, reliability, testing, clarity, and maintainability.**
 
 ## Pull request readiness
 
-**Prepare a complete, review-ready change before opening a pull request.**
-
-Run the smallest relevant test while developing. Before opening or updating a pull request,
-establish the development environment described in `CONTRIBUTING.md`. Run `make format`,
-`make pre-commit`, and all tests relevant to the change locally, and confirm they pass. If a
-required check cannot run, report the limitation and do not claim the change is ready. Follow the
-pull request template when preparing the pull request description.
-
-Treat validation as evidence for the exact tested change. After a later edit or rebase, rerun the
-affected checks.
-
-For higher assurance, run `make pre-flight`, which performs the project's broad local validation
-suite.
-
-Treat project CI as confirmation of a locally validated change, not as a development loop or a
-substitute for local compute. If a maintainer asks for an early draft, agree on its scope before
-opening it. After review feedback, batch related fixes and rerun the relevant local checks so the
-contributor can push one coherent update.
+Prepare a complete, review-ready change before opening a pull request. Before opening or updating
+one, run `make format`, `make pre-commit` and all relevant tests locally; report any check that
+cannot run. Moved to skill `nautilus-trader-pull-request-readiness`
+(`.agents/skills/nautilus-trader-pull-request-readiness/SKILL.md`): load it when you prepare or
+update a pull request or call a change ready.
 
 ## Git and public interaction
 
@@ -105,6 +92,14 @@ contributor can push one coherent update.
 These rules come from the fork owner (2026-10-26). They apply to every agent working in this fork
 and take precedence over the generic contributor guidance above where they differ.
 
+### Goal and MT5 access
+
+- Goal (owner, 2026-10-26): backtest Deriv binary options through an MT5 provider connected to the
+  Deriv broker, then paper trade and later trade live. Start with Volatility 75.
+- MT5 runs on Windows and is logged in to the Deriv account. Its login details are in
+  `C:\LeonAI-DO\dev\TRADING`. Read them only when a task needs the MT5 login and the owner asked
+  for that task; never print them or copy them into files, logs, commits or output.
+
 ### Repository, place and sync
 
 - `origin` is the owner's fork, `https://github.com/LeonAI-DO-YLCS/nautilus_trader`. Never pull
@@ -126,6 +121,11 @@ and take precedence over the generic contributor guidance above where they diffe
   (Parquet catalog, Arrow wranglers, streaming backtests).
 - Run a prior-art check before building anything; do not rebuild what already exists in this
   repository or in the owner's other projects. Test, validate and verify every step.
+- Before building, check what the system accepts and how (formats, loaders, fastest exact path),
+  then run the prior-art gate:
+  `C:\Users\yensi\.agents\skills\agent-core\references\prior-art-gate\GUIDE.md`.
+- Test data: use `Volatility75Index_yearly_deduped` (path under Safety). If it is not compatible,
+  use another available dataset in `Datasets`; if none fits, ask the owner.
 
 ### Engines
 
@@ -174,6 +174,10 @@ and take precedence over the generic contributor guidance above where they diffe
 - Every update recalibrates the time left from measured agent runs plus the coordinator's own
   management time, and shows every time as agent time (human time), for example
   `1 h agent time (≈ 2 days human time)` (owner, 2026-10-26).
+- Owner requests in this project are rules. The full list, with where each became a rule, is in
+  `.artifacts/rules/owner-requests-2026-10-26.md` (local, git-ignored).
+- Rules 6 (short HTML cards), 10 (Sol high supervises) and 15 (two-fail takeover) are also global
+  now (owner, 2026-10-26).
 
 ### Memory and retrieval
 
@@ -184,6 +188,9 @@ and take precedence over the generic contributor guidance above where they diffe
   index or run them inside WSL. Their indexes show the branch checked out in the Windows copy;
   refresh them (`codegraph sync`, `zg index`) after each change reaches that copy.
 - If a tool breaks, reinstall it, but first back up its old index or database. No data loss.
+- Every decision goes to the project decision log (`data/decisions.json`, local, git-ignored),
+  Engram (`--project nautilus-trader`) and the coordinator's memory. Save pending decisions too,
+  marked pending (owner, 2026-10-26).
 
 ### Safety
 
