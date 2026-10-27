@@ -9,6 +9,8 @@ description = "Local vectorbt research environment for Deriv binary backtests"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "deriv-mt5",
+    "numpy>=2.5.4",
+    "pandas>=3.1.0",
     "pyarrow>=26.0.0",
     "vectorbt==1.2.0",
 ]

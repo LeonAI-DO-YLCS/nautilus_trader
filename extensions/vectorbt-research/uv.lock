@@ -1013,6 +1013,8 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "deriv-mt5" },
+    { name = "numpy" },
+    { name = "pandas" },
     { name = "pyarrow" },
     { name = "vectorbt" },
 ]
@@ -1025,6 +1027,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "deriv-mt5", directory = "../deriv-mt5" },
+    { name = "numpy", specifier = ">=2.5.4" },
+    { name = "pandas", specifier = ">=3.1.0" },
     { name = "pyarrow", specifier = ">=26.0.0" },
     { name = "vectorbt", specifier = "==1.2.0" },
 ]
