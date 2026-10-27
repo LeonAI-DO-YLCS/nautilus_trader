@@ -1,0 +1,16 @@
+[project]
+name = "vectorbt-research"
+version = "0.1.0"
+description = "Local vectorbt research environment for Deriv binary backtests"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "vectorbt==1.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.uv]
+package = false
